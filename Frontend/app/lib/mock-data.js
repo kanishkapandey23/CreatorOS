@@ -1,0 +1,127 @@
+export const REFLECTION_PROMPTS = [
+  {
+    id: 'p1',
+    title: 'What made you pause this week?',
+    hint: 'A small moment is enough. A line someone said. A thought during a walk.',
+  },
+  {
+    id: 'p2',
+    title: 'What did you change your mind about?',
+    hint: 'Even a tiny shift in opinion is a story worth telling.',
+  },
+  {
+    id: 'p3',
+    title: 'What did you build, ship or finish?',
+    hint: 'No accomplishment is too small. Describe how it felt.',
+  },
+  {
+    id: 'p4',
+    title: 'Where did you struggle?',
+    hint: 'Friction makes the best stories. Be honest with yourself.',
+  },
+  {
+    id: 'p5',
+    title: 'Who taught you something?',
+    hint: 'A mentor, a stranger, a child, a book — anyone.',
+  },
+  {
+    id: 'p6',
+    title: 'If you could share one thing this week, what would it be?',
+    hint: 'Trust your instinct. The first answer is usually the truest.',
+  },
+];
+
+export const MOCK_STORIES = [
+  {
+    id: 'st_001',
+    title: 'The Tuesday I almost gave up',
+    emotion: 'Vulnerability',
+    category: 'Founder Journey',
+    status: 'draft',
+    potential: 92,
+    createdAt: '2025-06-10',
+    summary:
+      'A quiet morning where I sat with the idea of walking away — and what made me stay.',
+    lesson: 'Conviction is rebuilt in small moments, not big speeches.',
+    tags: ['founder', 'resilience', 'burnout'],
+    suggestedFormats: ['LinkedIn Post', 'Newsletter', 'Twitter Thread'],
+  },
+  {
+    id: 'st_002',
+    title: 'What my first 100 users taught me',
+    emotion: 'Curiosity',
+    category: 'Product',
+    status: 'idea',
+    potential: 81,
+    createdAt: '2025-06-08',
+    summary:
+      'Patterns I noticed when I stopped reading dashboards and started reading messages.',
+    lesson: 'Listen at the edges. The middle of your data already agrees with you.',
+    tags: ['product', 'users', 'feedback'],
+    suggestedFormats: ['LinkedIn Post', 'YouTube Short'],
+  },
+  {
+    id: 'st_003',
+    title: 'A walk that changed the roadmap',
+    emotion: 'Clarity',
+    category: 'Strategy',
+    status: 'published',
+    potential: 74,
+    createdAt: '2025-06-04',
+    summary:
+      'Sometimes the best decisions arrive when you stop trying to make them.',
+    lesson: 'Clarity is the dividend of attention, not effort.',
+    tags: ['strategy', 'thinking'],
+    suggestedFormats: ['Newsletter'],
+  },
+  {
+    id: 'st_004',
+    title: 'The cofounder conversation I had been avoiding',
+    emotion: 'Tension',
+    category: 'Leadership',
+    status: 'draft',
+    potential: 88,
+    createdAt: '2025-06-02',
+    summary:
+      'Why the hardest conversations turn out to be the most generous ones.',
+    lesson: 'Honesty is a form of respect — to others and to yourself.',
+    tags: ['leadership', 'teams'],
+    suggestedFormats: ['LinkedIn Post', 'Essay'],
+  },
+  {
+    id: 'st_005',
+    title: 'Notes from shipping a v0',
+    emotion: 'Joy',
+    category: 'Craft',
+    status: 'idea',
+    potential: 69,
+    createdAt: '2025-05-29',
+    summary: 'Small details I almost cut, that quietly defined the product.',
+    lesson: 'Taste compounds.',
+    tags: ['design', 'shipping'],
+    suggestedFormats: ['Twitter Thread'],
+  },
+  {
+    id: 'st_006',
+    title: 'The email I drafted six times',
+    emotion: 'Care',
+    category: 'Writing',
+    status: 'draft',
+    potential: 77,
+    createdAt: '2025-05-26',
+    summary: 'When the words matter, the rewrites are the real work.',
+    lesson: 'Care leaves a fingerprint.',
+    tags: ['writing', 'craft'],
+    suggestedFormats: ['Essay', 'Newsletter'],
+  },
+];
+
+export const MOCK_PLANNER_WEEK = [
+  { day: 'Mon', date: 'Jun 16', items: [{ id: 'p1', title: 'The Tuesday I almost gave up', type: 'LinkedIn', status: 'draft' }] },
+  { day: 'Tue', date: 'Jun 17', items: [] },
+  { day: 'Wed', date: 'Jun 18', items: [{ id: 'p2', title: 'What my first 100 users taught me', type: 'Newsletter', status: 'scheduled' }] },
+  { day: 'Thu', date: 'Jun 19', items: [] },
+  { day: 'Fri', date: 'Jun 20', items: [{ id: 'p3', title: 'A walk that changed the roadmap', type: 'Twitter', status: 'idea' }] },
+  { day: 'Sat', date: 'Jun 21', items: [] },
+  { day: 'Sun', date: 'Jun 22', items: [{ id: 'p4', title: 'Weekly reflection ritual', type: 'Reflection', status: 'planned' }] },
+];

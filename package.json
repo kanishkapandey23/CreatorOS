@@ -1,0 +1,12 @@
+{
+  "name": "creatoros",
+  "version": "1.0.0",
+  "description": "CreatorOS - A creative operating system for storytellers",
+  "private": true,
+  "scripts": {
+    "dev": "cd Frontend && npm run dev",
+    "dev:frontend": "cd Frontend && npm run dev",
+    "build": "cd Frontend && npm run build",
+    "start": "cd Frontend && npm start"
+  }
+}
