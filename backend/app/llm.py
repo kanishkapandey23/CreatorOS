@@ -6,17 +6,47 @@ import datetime
 import numpy as np
 import torch
 import psutil
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("creatoros.llm")
 
 # Model Maps
-MODEL_SIZES = {
-    "small": "Qwen/Qwen2.5-0.5B-Instruct",
-    "medium": "Qwen/Qwen2.5-1.5B-Instruct",
-    "large": "Qwen/Qwen2.5-7B-Instruct"
+# Switch models via environment variables (no code changes required):
+#   LLM_MODE=auto|gemini|groq|local|mock   (auto = fastest available; best for demos)
+#   LLM_MODEL_FAMILY=qwen|llama              (local mode only)
+#   LLM_MODEL_SIZE=small|medium|large        (local mode only)
+#   LLM_MODEL_NAME=<huggingface model>       (local mode only)
+#   GEMINI_API_KEY=                          (free: https://aistudio.google.com/apikey)
+#   GEMINI_MODEL=gemini-2.0-flash            (fast default)
+#   GROQ_API_KEY=                            (free: https://console.groq.com)
+#   GROQ_MODEL=llama-3.1-8b-instant
+#   HF_TOKEN=<token>                         (required for gated Llama models)
+
+MODEL_FAMILIES = {
+    "qwen": {
+        "small": "Qwen/Qwen2.5-0.5B-Instruct",
+        "medium": "Qwen/Qwen2.5-1.5B-Instruct",
+        "large": "Qwen/Qwen2.5-7B-Instruct",
+    },
+    "llama": {
+        "small": "meta-llama/Llama-3-8b-Instruct",
+        "medium": "meta-llama/Llama-3-8b-Instruct",
+        "large": "meta-llama/Llama-3-8b-Instruct",
+    },
 }
+
+HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant").strip()
+
+# Keep backward compatibility
+MODEL_SIZES = MODEL_FAMILIES["qwen"]
 
 class SystemDiagnostics:
     @staticmethod
@@ -32,7 +62,7 @@ class SystemDiagnostics:
             default_mode = "local"
             default_size = "large"
         else:
-            default_mode = "mock"  # Start in mock by default to avoid downloading big models automatically
+            default_mode = "auto"  # Prefer cloud APIs on CPU; avoids slow local downloads
             if total_ram_gb > 16.0:
                 default_size = "medium"
             else:
@@ -52,9 +82,39 @@ diagnostics = SystemDiagnostics.profile()
 # Load env variables with profiled defaults
 LLM_MODE = os.environ.get("LLM_MODE", diagnostics["default_mode"]).lower()
 LLM_MODEL_SIZE = os.environ.get("LLM_MODEL_SIZE", diagnostics["default_size"]).lower()
-LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", MODEL_SIZES.get(LLM_MODEL_SIZE, "Qwen/Qwen2.5-0.5B-Instruct"))
 
-logger.info(f"LLM Configuration: MODE={LLM_MODE}, SIZE={LLM_MODEL_SIZE}, MODEL_NAME={LLM_MODEL_NAME}")
+# Support model family selection (qwen or llama)
+LLM_MODEL_FAMILY = os.environ.get("LLM_MODEL_FAMILY", "qwen").lower()
+if LLM_MODEL_FAMILY not in MODEL_FAMILIES:
+    logger.warning(f"Unknown model family '{LLM_MODEL_FAMILY}'. Defaulting to 'qwen'.")
+    LLM_MODEL_FAMILY = "qwen"
+
+# Get model name based on family and size
+selected_family_models = MODEL_FAMILIES.get(LLM_MODEL_FAMILY, MODEL_FAMILIES["qwen"])
+default_model_for_size = selected_family_models.get(LLM_MODEL_SIZE, selected_family_models.get("small", MODEL_SIZES.get(LLM_MODEL_SIZE, "Qwen/Qwen2.5-0.5B-Instruct")))
+
+# Allow explicit override
+LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", default_model_for_size)
+
+
+def _resolve_llm_mode() -> str:
+    """Pick the active backend. `auto` prefers fast cloud APIs for demos."""
+    mode = LLM_MODE
+    if mode != "auto":
+        return mode
+    if GEMINI_API_KEY:
+        return "gemini"
+    if GROQ_API_KEY:
+        return "groq"
+    if diagnostics["cuda_available"]:
+        return "local"
+    return "mock"
+
+
+logger.info(
+    f"LLM Configuration: MODE={LLM_MODE}, RESOLVED={_resolve_llm_mode()}, "
+    f"FAMILY={LLM_MODEL_FAMILY}, SIZE={LLM_MODEL_SIZE}, MODEL_NAME={LLM_MODEL_NAME}"
+)
 
 class SentenceEmbeddingEngine:
     def __init__(self):
@@ -111,6 +171,28 @@ class SentenceEmbeddingEngine:
 # Initialize Embedding Engine
 embedding_engine = SentenceEmbeddingEngine()
 
+def _hf_auth_kwargs():
+    return {"token": HF_TOKEN} if HF_TOKEN else {}
+
+
+def _build_chat_prompt(system_prompt: str, user_prompt: str) -> tuple[str, str]:
+    """Return (prompt, assistant_marker) for the active model family."""
+    if LLM_MODEL_FAMILY == "llama":
+        prompt = (
+            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+            f"{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+            f"{user_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+        return prompt, "<|start_header_id|>assistant<|end_header_id|>"
+
+    prompt = (
+        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+    return prompt, "<|im_start|>assistant\n"
+
+
 class LocalLLMClient:
     def __init__(self):
         self.pipeline = None
@@ -121,26 +203,32 @@ class LocalLLMClient:
             return
         try:
             from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
-            logger.info(f"Loading HF model: {LLM_MODEL_NAME} on CPU...")
-            
-            # Using CPU, float32, low memory usage settings
-            tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_NAME)
+            auth = _hf_auth_kwargs()
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if device == "cuda" else torch.float32
+            logger.info(f"Loading HF model: {LLM_MODEL_NAME} on {device}...")
+
+            tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_NAME, **auth)
             model = AutoModelForCausalLM.from_pretrained(
-                LLM_MODEL_NAME, 
-                torch_dtype=torch.float32, 
-                low_cpu_mem_usage=True
+                LLM_MODEL_NAME,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+                **auth,
             )
-            
+            if device == "cuda":
+                model = model.to(device)
+
             self.pipeline = pipeline(
-                "text-generation", 
-                model=model, 
+                "text-generation",
+                model=model,
                 tokenizer=tokenizer,
                 max_new_tokens=512,
                 temperature=0.2,
-                do_sample=True
+                do_sample=True,
+                device=0 if device == "cuda" else -1,
             )
             self.loaded = True
-            logger.info(f"Model {LLM_MODEL_NAME} loaded successfully.")
+            logger.info(f"Model {LLM_MODEL_NAME} loaded successfully on {device}.")
         except Exception as e:
             logger.error(f"Failed to load HF local model {LLM_MODEL_NAME}: {e}. Falling back to Mock LLM.")
             self.loaded = False
@@ -148,19 +236,77 @@ class LocalLLMClient:
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         self._lazy_load()
         if not self.loaded or not self.pipeline:
-            # Fallback to mock
             logger.warning("Local pipeline not available. Falling back to Mock generator.")
             return mock_llm_client.generate(system_prompt, user_prompt)
             
         try:
-            prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+            prompt, assistant_marker = _build_chat_prompt(system_prompt, user_prompt)
             res = self.pipeline(prompt)
-            output = res[0]['generated_text']
-            # Extract assistant's reply
-            assistant_reply = output.split("<|im_start|>assistant\n")[-1].replace("<|im_end|>", "").strip()
-            return assistant_reply
+            output = res[0]["generated_text"]
+            assistant_reply = output.split(assistant_marker)[-1]
+            for stop in ("<|im_end|>", "<|eot_id|>"):
+                assistant_reply = assistant_reply.split(stop)[0]
+            return assistant_reply.strip()
         except Exception as e:
             logger.error(f"Generation error in LocalLLMClient: {e}")
+            return mock_llm_client.generate(system_prompt, user_prompt)
+
+class GeminiLLMClient:
+    """Google Gemini API — free tier, fast (~1-3s). Get key: https://aistudio.google.com/apikey"""
+
+    def generate(self, system_prompt: str, user_prompt: str) -> str:
+        if not GEMINI_API_KEY:
+            logger.warning("GEMINI_API_KEY not set. Falling back to Mock LLM.")
+            return mock_llm_client.generate(system_prompt, user_prompt)
+        try:
+            import httpx
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+            payload = {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
+            }
+            with httpx.Client(timeout=90.0) as client:
+                res = client.post(url, params={"key": GEMINI_API_KEY}, json=payload)
+                res.raise_for_status()
+                data = res.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}. Falling back to Mock LLM.")
+            return mock_llm_client.generate(system_prompt, user_prompt)
+
+
+class GroqLLMClient:
+    """Groq API — free tier, very fast inference. Get key: https://console.groq.com"""
+
+    def generate(self, system_prompt: str, user_prompt: str) -> str:
+        if not GROQ_API_KEY:
+            logger.warning("GROQ_API_KEY not set. Falling back to Mock LLM.")
+            return mock_llm_client.generate(system_prompt, user_prompt)
+        try:
+            import httpx
+            with httpx.Client(timeout=90.0) as client:
+                res = client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": GROQ_MODEL,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 2048,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.error(f"Groq API error: {e}. Falling back to Mock LLM.")
             return mock_llm_client.generate(system_prompt, user_prompt)
 
 class MockLLMClient:
@@ -524,8 +670,21 @@ class MockLLMClient:
 # Instantiate LLM Clients
 mock_llm_client = MockLLMClient()
 local_llm_client = LocalLLMClient()
+gemini_llm_client = GeminiLLMClient()
+groq_llm_client = GroqLLMClient()
+
+_LLM_CLIENTS = {
+    "gemini": gemini_llm_client,
+    "groq": groq_llm_client,
+    "local": local_llm_client,
+    "mock": mock_llm_client,
+}
+
 
 def get_llm():
-    if LLM_MODE == "local":
-        return local_llm_client
-    return mock_llm_client
+    mode = _resolve_llm_mode()
+    client = _LLM_CLIENTS.get(mode)
+    if not client:
+        logger.warning(f"Unknown LLM_MODE '{LLM_MODE}'. Falling back to mock.")
+        return mock_llm_client
+    return client

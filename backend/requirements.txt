@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+numpy
+torch
+transformers
+sentence-transformers
+psutil
+httpx
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+pydantic-settings
+email-validator

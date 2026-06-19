@@ -9,7 +9,7 @@ from app.llm import get_llm, embedding_engine
 logger = logging.getLogger("creatoros.agents")
 
 # 1. Agent 1: Creator Memory Engine Extraction Pipeline
-def process_memory_extraction(db: Session, raw_input: str) -> Memory:
+def process_memory_extraction(db: Session, raw_input: str, user_id: str) -> Memory:
     """
     Takes raw creator input, calls the LLM to extract a structured memory schema,
     generates a vector embedding, and saves it to the database.
@@ -61,6 +61,7 @@ def process_memory_extraction(db: Session, raw_input: str) -> Memory:
     memory_id = f"mem_{uuid.uuid4().hex[:8]}"
     memory = Memory(
         id=memory_id,
+        user_id=user_id,
         memory_type=data.get("memory_type", "personal_experience"),
         event=data.get("event", "Journal reflection"),
         turning_point=data.get("turning_point"),
@@ -373,19 +374,20 @@ def retrieve_relevant_kb(db: Session, query: str, limit: int = 1) -> list[Strate
     return [item for sim, item in scored_items[:limit]]
 
 # 4. Agent 2: Creative Strategy Agent question state machine
-def start_strategy_chat(db: Session, memory_id: str = None) -> ChatSession:
+def start_strategy_chat(db: Session, memory_id: str = None, user_id: str = None) -> ChatSession:
     """
     Starts a strategy chat session linked to a memory, seeds the first question.
     """
     session_id = f"session_{uuid.uuid4().hex[:8]}"
     memory = None
     if memory_id:
-        memory = db.query(Memory).filter(Memory.id == memory_id).first()
+        memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
         
     title = f"Strategizing on: {memory.event}" if memory else "Creative brainstorming"
     
     session = ChatSession(
         id=session_id,
+        user_id=user_id,
         title=title,
         memory_id=memory_id,
         status="active"
@@ -535,6 +537,7 @@ def process_strategy_chat_message(db: Session, session_id: str, message_text: st
         opp_id = f"st_{uuid.uuid4().hex[:8]}"
         opportunity = ContentOpportunity(
             id=opp_id,
+            user_id=session.user_id,
             memory_id=memory.id if memory else None,
             content_type=opportunity_data.get("content_type", "story_reel"),
             topic=opportunity_data.get("topic", "personal reflection"),
@@ -551,6 +554,7 @@ def process_strategy_chat_message(db: Session, session_id: str, message_text: st
         # Pre-seed empty draft sections for the workspace editor
         draft = StoryDraft(
             story_id=opp_id,
+            user_id=session.user_id,
             sections={sec: "" for sec in opportunity.structure}
         )
         # Seed default hook if available

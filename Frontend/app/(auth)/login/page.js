@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Mail, Loader2 } from 'lucide-react';
@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useAuth } from '@/providers/auth-provider';
+import { authService } from '@/services/auth.service';
 import { toast } from 'sonner';
 
 function GoogleIcon() {
@@ -29,29 +30,41 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [oauthProviders, setOauthProviders] = useState([]);
+
+  useEffect(() => {
+    authService.getOAuthProviders().then(setOauthProviders).catch(() => setOauthProviders([]));
+  }, []);
 
   const handleEmail = async (e) => {
     e.preventDefault();
     if (!email) return toast.error('Enter your email to continue');
+    if (!password) return toast.error('Enter your password');
     setLoading('email');
     try {
       await signIn({ email, password });
       toast.success('Welcome back');
       router.push('/workspace');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Sign in failed');
     } finally {
       setLoading(null);
     }
   };
 
-  const handleOAuth = async (provider) => {
-    setLoading(provider);
-    try {
-      await signInWith(provider);
-      router.push('/workspace');
-    } finally {
-      setLoading(null);
+  const handleOAuth = (provider) => {
+    if (!oauthProviders.includes(provider)) {
+      toast.error(
+        `${provider === 'google' ? 'Google' : 'GitHub'} sign-in is not configured. Add OAuth credentials to backend/.env or use email sign-in.`
+      );
+      return;
     }
+    setLoading(provider);
+    signInWith(provider);
   };
+
+  const googleEnabled = oauthProviders.includes('google');
+  const githubEnabled = oauthProviders.includes('github');
 
   return (
     <motion.div
@@ -64,12 +77,17 @@ export default function LoginPage() {
       <p className="mt-1.5 text-[13.5px] text-ink-muted">Sign in to your CreatorOS workspace.</p>
 
       <div className="mt-6 space-y-2">
-        <Button onClick={() => handleOAuth('google')} disabled={loading} variant="outline" className="h-11 w-full justify-center gap-2.5 rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary">
+        <Button onClick={() => handleOAuth('google')} disabled={loading || !googleEnabled} variant="outline" className="h-11 w-full justify-center gap-2.5 rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary disabled:opacity-50">
           {loading === 'google' ? <Loader2 className="h-4 w-4 animate-spin" /> : <GoogleIcon />} Continue with Google
         </Button>
-        <Button onClick={() => handleOAuth('github')} disabled={loading} variant="outline" className="h-11 w-full justify-center gap-2.5 rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary">
+        <Button onClick={() => handleOAuth('github')} disabled={loading || !githubEnabled} variant="outline" className="h-11 w-full justify-center gap-2.5 rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary disabled:opacity-50">
           {loading === 'github' ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitHubIcon />} Continue with GitHub
         </Button>
+        {!googleEnabled && !githubEnabled && (
+          <p className="pt-1 text-center text-[12px] text-ink-muted">
+            OAuth providers are not configured yet. Use email sign-in below.
+          </p>
+        )}
       </div>
 
       <div className="my-6 flex items-center gap-3 text-[11.5px] uppercase tracking-wider text-ink-subtle">

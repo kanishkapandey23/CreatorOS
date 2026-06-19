@@ -1,14 +1,12 @@
-import axios from 'axios';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
+import { api } from '@/lib/api';
 
 export const reflectionService = {
   async getActiveSession() {
-    const res = await axios.get(`${API_BASE}/reflections/active`);
+    const res = await api.get('/reflections/active');
     return res.data;
   },
   async saveAnswer({ promptId, promptTitle, value }) {
-    const res = await axios.post(`${API_BASE}/reflections/answer`, {
+    const res = await api.post('/reflections/answer', {
       promptId,
       promptTitle,
       value,
@@ -16,7 +14,7 @@ export const reflectionService = {
     return res.data;
   },
   async complete(sessionId) {
-    const res = await axios.post(`${API_BASE}/reflections/complete/${sessionId}`);
+    const res = await api.post(`/reflections/complete/${sessionId}`);
     return res.data;
   },
 };

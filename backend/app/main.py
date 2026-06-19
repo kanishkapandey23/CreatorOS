@@ -1,6 +1,10 @@
 import logging
 import uuid
 import json
+import os
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # Workaround for FastAPI/Starlette version compatibility issue
 # TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'
@@ -14,11 +18,38 @@ starlette.routing.Router.__init__ = patched_router_init
 
 from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
 
-from app.database import init_db, get_db, Memory, StrategyKB, ContentOpportunity, StoryDraft, ReflectionSession, ReflectionAnswer, ChatSession, ChatMessage
+from app.database import (
+    init_db, get_db, User, CreatorProfile, Memory, StrategyKB, ContentOpportunity,
+    StoryDraft, ReflectionSession, ReflectionAnswer, ChatSession, ChatMessage,
+)
+from app.auth import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    OAuthProvidersResponse,
+    TokenResponse,
+    UserLogin,
+    UserProfileResponse,
+    UserRegister,
+    create_access_token,
+    find_or_create_oauth_user,
+    get_current_user,
+    get_password_hash,
+    user_to_profile,
+    verify_password,
+)
+from app.oauth import (
+    build_authorize_url,
+    create_oauth_state,
+    fetch_oauth_profile,
+    frontend_callback_url,
+    get_configured_providers,
+    is_provider_configured,
+    verify_oauth_state,
+)
 from app.agents import (
     process_memory_extraction,
     seed_kb_frameworks,
@@ -46,10 +77,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="CreatorOS API", version="1.0.0", lifespan=lifespan)
 
-# CORS Setup to allow frontend connections
+# CORS — origins from env (comma-separated), defaults to local Next.js dev server
+_cors_raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For local beta, allow all origins. Can be restricted to localhost:3000 in production.
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,16 +127,127 @@ class FeedbackPayload(BaseModel):
     feedback: str
 
 # ----------------------------------------------------
+# Auth helpers
+# ----------------------------------------------------
+
+def _get_creator_profile(db: Session, user_id: str) -> CreatorProfile:
+    profile = db.query(CreatorProfile).filter(CreatorProfile.user_id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Creator profile not found")
+    return profile
+
+
+def _get_user_opportunity(db: Session, story_id: str, user_id: str) -> ContentOpportunity:
+    opp = db.query(ContentOpportunity).filter(
+        ContentOpportunity.id == story_id,
+        ContentOpportunity.user_id == user_id,
+    ).first()
+    if not opp:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return opp
+
+
+def _get_user_chat_session(db: Session, session_id: str, user_id: str) -> ChatSession:
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == user_id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return session
+
+# ----------------------------------------------------
+# Auth routes
+# ----------------------------------------------------
+
+@app.post("/api/auth/register", response_model=TokenResponse)
+def register(payload: UserRegister, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user = User(
+        id=user_id,
+        email=payload.email,
+        hashed_password=get_password_hash(payload.password),
+        name=payload.name,
+    )
+    profile = CreatorProfile(
+        user_id=user_id,
+        niche=payload.niche,
+        interests=["coding", "indie hacking", "creative writing", "startups"],
+        preferred_tone="casual",
+        goals=["build in public", "write authentic stories", "explain simple technical lessons"],
+    )
+    db.add(user)
+    db.add(profile)
+    db.commit()
+
+    token = create_access_token(user.id)
+    return TokenResponse(access_token=token, expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(payload: UserLogin, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not user.hashed_password or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(user.id)
+    return TokenResponse(access_token=token, expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+
+@app.get("/api/auth/oauth/providers", response_model=OAuthProvidersResponse)
+def list_oauth_providers():
+    return OAuthProvidersResponse(providers=get_configured_providers())
+
+
+@app.get("/api/auth/oauth/{provider}")
+def oauth_login(provider: str):
+    if not is_provider_configured(provider):
+        return RedirectResponse(frontend_callback_url(error="oauth_not_configured"))
+    state = create_oauth_state(provider)
+    return RedirectResponse(build_authorize_url(provider, state))
+
+
+@app.get("/api/auth/oauth/{provider}/callback")
+async def oauth_callback(provider: str, code: str = None, state: str = None, db: Session = Depends(get_db)):
+    if not is_provider_configured(provider):
+        return RedirectResponse(frontend_callback_url(error="oauth_not_configured"))
+    if not code or not state:
+        return RedirectResponse(frontend_callback_url(error="oauth_missing_params"))
+
+    try:
+        verify_oauth_state(state, provider)
+        profile_data = await fetch_oauth_profile(provider, code)
+        user = find_or_create_oauth_user(db, profile_data)
+        token = create_access_token(user.id)
+        return RedirectResponse(frontend_callback_url(token=token))
+    except HTTPException as exc:
+        logger.error(f"OAuth callback failed for {provider}: {exc.detail}")
+        return RedirectResponse(frontend_callback_url(error="oauth_failed"))
+    except Exception as exc:
+        logger.error(f"OAuth callback error for {provider}: {exc}")
+        return RedirectResponse(frontend_callback_url(error="oauth_failed"))
+
+
+@app.get("/api/auth/me", response_model=UserProfileResponse)
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    profile = db.query(CreatorProfile).filter(CreatorProfile.user_id == current_user.id).first()
+    return user_to_profile(current_user, profile)
+
+# ----------------------------------------------------
 # Endpoints
 # ----------------------------------------------------
 
 @app.get("/api/workspace")
-def get_workspace_home(db: Session = Depends(get_db)):
-    """
-    Returns home dashboard details (recent opportunities, weekly plans, etc.)
-    """
+def get_workspace_home(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_id = current_user.id
     # 1. Active reflection session
-    active_ref = db.query(ReflectionSession).filter(ReflectionSession.status == "active").first()
+    active_ref = db.query(ReflectionSession).filter(
+        ReflectionSession.user_id == user_id,
+        ReflectionSession.status == "active",
+    ).first()
     ref_data = None
     if active_ref:
         ans_count = db.query(ReflectionAnswer).filter(ReflectionAnswer.session_id == active_ref.id).count()
@@ -117,7 +261,7 @@ def get_workspace_home(db: Session = Depends(get_db)):
         # Create a default active session if none exists
         import uuid
         session_id = f"ref_{uuid.uuid4().hex[:8]}"
-        active_ref = ReflectionSession(id=session_id, title="Tuesday Reflection", status="active")
+        active_ref = ReflectionSession(id=session_id, user_id=user_id, title="Tuesday Reflection", status="active")
         db.add(active_ref)
         db.commit()
         ref_data = {
@@ -128,7 +272,9 @@ def get_workspace_home(db: Session = Depends(get_db)):
         }
         
     # 2. Recent opportunities (Story Bank drafts/ideas)
-    opps = db.query(ContentOpportunity).order_by(ContentOpportunity.created_at.desc()).limit(3).all()
+    opps = db.query(ContentOpportunity).filter(
+        ContentOpportunity.user_id == user_id,
+    ).order_by(ContentOpportunity.created_at.desc()).limit(3).all()
     recent_stories = []
     
     # If database is empty, seed some default mock opportunities
@@ -150,7 +296,7 @@ def get_workspace_home(db: Session = Depends(get_db)):
         ]
         for item in dummy_data:
             opp = ContentOpportunity(
-                id=item["id"], content_type=item["content_type"], topic=item["topic"], status=item["status"]
+                id=item["id"], user_id=user_id, content_type=item["content_type"], topic=item["topic"], status=item["status"]
             )
             opp.hook_options = item["hook_options"]
             opp.structure = item["structure"]
@@ -158,12 +304,14 @@ def get_workspace_home(db: Session = Depends(get_db)):
             db.add(opp)
             
             # Preseed draft
-            draft = StoryDraft(story_id=item["id"], sections={sec: "" for sec in opp.structure})
+            draft = StoryDraft(story_id=item["id"], user_id=user_id, sections={sec: "" for sec in opp.structure})
             if opp.hook_options:
                 draft.sections = {**draft.sections, "hook": opp.hook_options[0]}
             db.add(draft)
         db.commit()
-        opps = db.query(ContentOpportunity).order_by(ContentOpportunity.created_at.desc()).limit(3).all()
+        opps = db.query(ContentOpportunity).filter(
+            ContentOpportunity.user_id == user_id,
+        ).order_by(ContentOpportunity.created_at.desc()).limit(3).all()
 
     for o in opps:
         # Resolve category/emotion/potential to match Next.js MOCK_STORIES schema
@@ -241,23 +389,26 @@ REFLECTION_PROMPTS = [
 ]
 
 @app.get("/api/reflections/active")
-def get_active_reflection(db: Session = Depends(get_db)):
-    session = db.query(ReflectionSession).filter(ReflectionSession.status == "active").first()
+def get_active_reflection(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_id = current_user.id
+    session = db.query(ReflectionSession).filter(
+        ReflectionSession.user_id == user_id,
+        ReflectionSession.status == "active",
+    ).first()
     if not session:
         import uuid
         session_id = f"ref_{uuid.uuid4().hex[:8]}"
-        session = ReflectionSession(id=session_id, title="Weekly Reflection Nudge", status="active")
+        session = ReflectionSession(id=session_id, user_id=user_id, title="Weekly Reflection Nudge", status="active")
         db.add(session)
         db.commit()
         db.refresh(session)
         
     # Get creator profile and recent memories to make prompts dynamic
-    from app.database import CreatorProfile
-    profile = db.query(CreatorProfile).first()
-    recent_memories = db.query(Memory).order_by(Memory.created_at.desc()).limit(5).all()
+    profile = _get_creator_profile(db, user_id)
+    recent_memories = db.query(Memory).filter(Memory.user_id == user_id).order_by(Memory.created_at.desc()).limit(5).all()
     
-    niche = profile.niche if profile else "Engineering & Tech Storytelling"
-    interests = profile.interests if profile else ["coding", "indie hacking", "creative writing"]
+    niche = profile.niche
+    interests = profile.interests
     
     llm = get_llm()
     system_prompt = (
@@ -302,16 +453,23 @@ def get_active_reflection(db: Session = Depends(get_db)):
     }
 
 @app.post("/api/reflections/answer")
-def save_reflection_answer(payload: AnswerPayload, db: Session = Depends(get_db)):
-    # Get active session
-    session = db.query(ReflectionSession).filter(ReflectionSession.status == "active").first()
+def save_reflection_answer(
+    payload: AnswerPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user.id
+    session = db.query(ReflectionSession).filter(
+        ReflectionSession.user_id == user_id,
+        ReflectionSession.status == "active",
+    ).first()
     if not session:
         raise HTTPException(status_code=400, detail="No active reflection session found.")
         
     # Find matching prompt title by getting active prompts (bypass LLM call if promptTitle is supplied directly)
     prompt_title = payload.promptTitle
     if not prompt_title:
-        active_res = get_active_reflection(db)
+        active_res = get_active_reflection(current_user=current_user, db=db)
         prompt_title = next((p["title"] for p in active_res["prompts"] if p["id"] == payload.promptId), "Reflection")
     
     # Save or update answer
@@ -337,8 +495,15 @@ def save_reflection_answer(payload: AnswerPayload, db: Session = Depends(get_db)
     return {"success": True}
 
 @app.post("/api/reflections/complete/{session_id}")
-def complete_reflection(session_id: str, db: Session = Depends(get_db)):
-    session = db.query(ReflectionSession).filter(ReflectionSession.id == session_id).first()
+def complete_reflection(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = db.query(ReflectionSession).filter(
+        ReflectionSession.id == session_id,
+        ReflectionSession.user_id == current_user.id,
+    ).first()
     if not session:
         raise HTTPException(status_code=404, detail="Reflection session not found.")
         
@@ -356,7 +521,7 @@ def complete_reflection(session_id: str, db: Session = Depends(get_db)):
                 # Use a nested transaction (savepoint) to isolate commits/rollbacks per answer
                 with db.begin_nested():
                     # 1. Extract Memory (Agent 1)
-                    memory = process_memory_extraction(db, ans.answer_text)
+                    memory = process_memory_extraction(db, ans.answer_text, current_user.id)
                     stories_discovered += 1
                     
                     # 2. Immediately generate Content Opportunity (Agent 2 RAG)
@@ -409,6 +574,7 @@ def complete_reflection(session_id: str, db: Session = Depends(get_db)):
                     opp_id = f"st_{uuid.uuid4().hex[:8]}"
                     opportunity = ContentOpportunity(
                         id=opp_id,
+                        user_id=current_user.id,
                         memory_id=memory.id,
                         content_type=opportunity_data.get("content_type", "linkedin_post"),
                         topic=opportunity_data.get("topic", memory.event),
@@ -422,6 +588,7 @@ def complete_reflection(session_id: str, db: Session = Depends(get_db)):
                     # Seed draft
                     draft = StoryDraft(
                         story_id=opp_id,
+                        user_id=current_user.id,
                         sections={sec: "" for sec in opportunity.structure}
                     )
                     if opportunity.hook_options:
@@ -439,11 +606,8 @@ def complete_reflection(session_id: str, db: Session = Depends(get_db)):
 
 # --- MEMORIES ---
 @app.get("/api/memories")
-def list_memories(db: Session = Depends(get_db)):
-    """
-    Returns list of memories to populate the timeline.
-    """
-    memories = db.query(Memory).order_by(Memory.created_at.desc()).all()
+def list_memories(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    memories = db.query(Memory).filter(Memory.user_id == current_user.id).order_by(Memory.created_at.desc()).all()
     results = []
     for m in memories:
         results.append({
@@ -462,8 +626,10 @@ def list_memories(db: Session = Depends(get_db)):
 
 # --- STORIES (STORY BANK) ---
 @app.get("/api/stories")
-def list_stories(db: Session = Depends(get_db)):
-    opps = db.query(ContentOpportunity).order_by(ContentOpportunity.created_at.desc()).all()
+def list_stories(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    opps = db.query(ContentOpportunity).filter(
+        ContentOpportunity.user_id == current_user.id,
+    ).order_by(ContentOpportunity.created_at.desc()).all()
     results = []
     for o in opps:
         linked_mem = o.memory
@@ -521,10 +687,8 @@ def list_stories(db: Session = Depends(get_db)):
     return results
 
 @app.get("/api/stories/{story_id}")
-def get_story(story_id: str, db: Session = Depends(get_db)):
-    o = db.query(ContentOpportunity).filter(ContentOpportunity.id == story_id).first()
-    if not o:
-        raise HTTPException(status_code=404, detail="Story not found")
+def get_story(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    o = _get_user_opportunity(db, story_id, current_user.id)
         
     linked_mem = o.memory
     category = "Storyteller"
@@ -576,18 +740,21 @@ def get_story(story_id: str, db: Session = Depends(get_db)):
         "lesson": lesson,
         "tags": tags,
         "suggestedFormats": [o.content_type.replace("_", " ").capitalize()],
-        "hooks": o.hook_options
+        "hooks": o.hook_options,
+        "structure": o.structure,
     }
 
 @app.post("/api/stories")
-def create_story(payload: CreateStoryPayload, db: Session = Depends(get_db)):
-    """
-    Manually creates a story idea in the Story Bank.
-    """
+def create_story(
+    payload: CreateStoryPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     import uuid
     opp_id = f"st_{uuid.uuid4().hex[:8]}"
     opp = ContentOpportunity(
         id=opp_id,
+        user_id=current_user.id,
         content_type="linkedin_post",
         topic=payload.title,
         status="idea"
@@ -601,6 +768,7 @@ def create_story(payload: CreateStoryPayload, db: Session = Depends(get_db)):
     # Save a draft
     draft = StoryDraft(
         story_id=opp_id,
+        user_id=current_user.id,
         sections={
             "hook": payload.title,
             "experience": payload.summary,
@@ -616,8 +784,12 @@ def create_story(payload: CreateStoryPayload, db: Session = Depends(get_db)):
 
 # --- WORKSPACE DRAFTS ---
 @app.get("/api/stories/{story_id}/draft")
-def get_story_draft(story_id: str, db: Session = Depends(get_db)):
-    draft = db.query(StoryDraft).filter(StoryDraft.story_id == story_id).first()
+def get_story_draft(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _get_user_opportunity(db, story_id, current_user.id)
+    draft = db.query(StoryDraft).filter(
+        StoryDraft.story_id == story_id,
+        StoryDraft.user_id == current_user.id,
+    ).first()
     if not draft:
         # Preseed empty sections
         sections = {"hook": "", "experience": "", "conflict": "", "lesson": "", "cta": ""}
@@ -633,10 +805,18 @@ def get_story_draft(story_id: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/stories/draft")
-def save_story_draft(payload: DraftPayload, db: Session = Depends(get_db)):
-    draft = db.query(StoryDraft).filter(StoryDraft.story_id == payload.storyId).first()
+def save_story_draft(
+    payload: DraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_user_opportunity(db, payload.storyId, current_user.id)
+    draft = db.query(StoryDraft).filter(
+        StoryDraft.story_id == payload.storyId,
+        StoryDraft.user_id == current_user.id,
+    ).first()
     if not draft:
-        draft = StoryDraft(story_id=payload.storyId)
+        draft = StoryDraft(story_id=payload.storyId, user_id=current_user.id)
         db.add(draft)
     
     draft.sections = payload.sections
@@ -644,10 +824,13 @@ def save_story_draft(payload: DraftPayload, db: Session = Depends(get_db)):
     return {"ok": True, "savedAt": draft.updated_at.isoformat()}
 
 @app.post("/api/stories/{story_id}/preview")
-def get_story_preview(story_id: str, payload: PreviewPayload, db: Session = Depends(get_db)):
-    opportunity = db.query(ContentOpportunity).filter(ContentOpportunity.id == story_id).first()
-    if not opportunity:
-        raise HTTPException(status_code=404, detail="Story opportunity not found")
+def get_story_preview(
+    story_id: str,
+    payload: PreviewPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opportunity = _get_user_opportunity(db, story_id, current_user.id)
         
     sections = payload.sections
     
@@ -675,9 +858,12 @@ def get_story_preview(story_id: str, payload: PreviewPayload, db: Session = Depe
     return {"polishedText": polished_text}
 
 @app.get("/api/stories/{story_id}/suggestions")
-def get_story_suggestions(story_id: str, db: Session = Depends(get_db)):
-    opportunity = db.query(ContentOpportunity).filter(ContentOpportunity.id == story_id).first()
-    draft = db.query(StoryDraft).filter(StoryDraft.story_id == story_id).first()
+def get_story_suggestions(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    opportunity = _get_user_opportunity(db, story_id, current_user.id)
+    draft = db.query(StoryDraft).filter(
+        StoryDraft.story_id == story_id,
+        StoryDraft.user_id == current_user.id,
+    ).first()
     
     if not draft or not any(draft.sections.values()):
         return {
@@ -722,8 +908,10 @@ def get_story_suggestions(story_id: str, db: Session = Depends(get_db)):
 
 # --- AGENT 2: CREATIVE STRATEGY CHAT FLOWS ---
 @app.get("/api/strategy/chat/sessions")
-def list_chat_sessions(db: Session = Depends(get_db)):
-    sessions = db.query(ChatSession).order_by(ChatSession.created_at.desc()).all()
+def list_chat_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    sessions = db.query(ChatSession).filter(
+        ChatSession.user_id == current_user.id,
+    ).order_by(ChatSession.created_at.desc()).all()
     results = []
     for s in sessions:
         results.append({
@@ -736,8 +924,12 @@ def list_chat_sessions(db: Session = Depends(get_db)):
     return results
 
 @app.post("/api/strategy/chat/sessions")
-def start_chat_session(payload: StartChatPayload, db: Session = Depends(get_db)):
-    session = start_strategy_chat(db, payload.memoryId)
+def start_chat_session(
+    payload: StartChatPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = start_strategy_chat(db, payload.memoryId, current_user.id)
     return {
         "id": session.id,
         "title": session.title,
@@ -746,10 +938,12 @@ def start_chat_session(payload: StartChatPayload, db: Session = Depends(get_db))
     }
 
 @app.get("/api/strategy/chat/sessions/{session_id}")
-def get_chat_session_details(session_id: str, db: Session = Depends(get_db)):
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Chat session not found")
+def get_chat_session_details(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = _get_user_chat_session(db, session_id, current_user.id)
         
     messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
     msg_data = []
@@ -791,7 +985,13 @@ def get_chat_session_details(session_id: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/strategy/chat/sessions/{session_id}/message")
-def post_chat_message(session_id: str, payload: MessagePayload, db: Session = Depends(get_db)):
+def post_chat_message(
+    session_id: str,
+    payload: MessagePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_user_chat_session(db, session_id, current_user.id)
     try:
         assistant_msg, is_completed, opp_data = process_strategy_chat_message(
             db, session_id, payload.message
@@ -814,14 +1014,13 @@ def post_chat_message(session_id: str, payload: MessagePayload, db: Session = De
 
 # --- FEEDBACK LOOP ---
 @app.post("/api/stories/{story_id}/feedback")
-def submit_story_feedback(story_id: str, payload: FeedbackPayload, db: Session = Depends(get_db)):
-    """
-    Receives user feedback on a content opportunity. Agent 2 updates the opportunity hooks
-    or structure parameters based on feedback.
-    """
-    opp = db.query(ContentOpportunity).filter(ContentOpportunity.id == story_id).first()
-    if not opp:
-        raise HTTPException(status_code=404, detail="Content opportunity not found")
+def submit_story_feedback(
+    story_id: str,
+    payload: FeedbackPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = _get_user_opportunity(db, story_id, current_user.id)
         
     opp.feedback = payload.feedback
     

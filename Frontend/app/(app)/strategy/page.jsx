@@ -11,9 +11,6 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { strategyService } from '@/services/strategy.service';
-import axios from 'axios';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
 
 const easing = { duration: 0.35, ease: [0.22, 1, 0.36, 1] };
 
@@ -31,10 +28,7 @@ export default function StrategyPage() {
   // Fetch memories list
   const { data: memories = [], isLoading: loadingMemories } = useQuery({
     queryKey: ['memories'],
-    queryFn: async () => {
-      const res = await axios.get(`${API_BASE}/memories`);
-      return res.data;
-    }
+    queryFn: () => strategyService.listMemories(),
   });
 
   // Fetch session details if activeSessionId is set
@@ -118,11 +112,12 @@ export default function StrategyPage() {
   const [activeOpportunity, setActiveOpportunity] = useState(null);
   useEffect(() => {
     if (session?.status === 'completed' && session?.opportunity_id) {
-      axios.get(`${API_BASE}/stories/${session.opportunity_id}`).then(resDetail => {
+      strategyService.getStory(session.opportunity_id).then((detail) => {
         setActiveOpportunity({
           id: session.opportunity_id,
-          ...resDetail.data,
-          hooks: resDetail.data.hooks || []
+          ...detail,
+          hooks: detail.hooks || [],
+          structure: detail.structure || [],
         });
       }).catch((err) => {
         console.error("Failed to load opportunity", err);
@@ -383,7 +378,7 @@ export default function StrategyPage() {
                 <div className="mt-4">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-subtle">Structure Blueprint</p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    {activeOpportunity.structure.map((step, idx) => (
+                    {(activeOpportunity.structure ?? []).map((step, idx) => (
                       <div key={step} className="flex items-center gap-1">
                         <Badge variant="secondary" className="rounded-full text-[10.5px] font-normal text-ink-muted capitalize bg-secondary py-0.5">
                           {idx + 1}. {step}

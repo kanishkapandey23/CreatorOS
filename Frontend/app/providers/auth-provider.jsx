@@ -39,11 +39,8 @@ export function AuthProvider({ children }) {
     return u;
   }, []);
 
-  const signInWith = useCallback(async (provider) => {
-    const u = await authService.signInWithOAuth(provider);
-    setUser(u);
-    setStatus('authenticated');
-    return u;
+  const signInWith = useCallback((provider) => {
+    authService.signInWithOAuth(provider);
   }, []);
 
   const signUp = useCallback(async (payload) => {

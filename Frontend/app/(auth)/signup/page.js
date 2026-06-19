@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/providers/auth-provider';
+import { authService } from '@/services/auth.service';
 import { toast } from 'sonner';
 
 export default function SignupPage() {
@@ -16,22 +17,39 @@ export default function SignupPage() {
   const { signUp, signInWith } = useAuth();
   const [loading, setLoading] = useState(null);
   const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [oauthProviders, setOauthProviders] = useState([]);
+
+  useEffect(() => {
+    authService.getOAuthProviders().then(setOauthProviders).catch(() => setOauthProviders([]));
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.email || !form.name) return toast.error('Tell us your name and email');
+    if (!form.password || form.password.length < 8) return toast.error('Password must be at least 8 characters');
     setLoading('email');
     try {
       await signUp(form);
       toast.success('Workspace ready');
       router.push('/workspace');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Sign up failed');
     } finally { setLoading(null); }
   };
 
-  const handleOAuth = async (p) => {
-    setLoading(p);
-    try { await signInWith(p); router.push('/workspace'); } finally { setLoading(null); }
+  const handleOAuth = (provider) => {
+    if (!oauthProviders.includes(provider)) {
+      toast.error(
+        `${provider === 'google' ? 'Google' : 'GitHub'} sign-in is not configured. Add OAuth credentials to backend/.env or use email sign-up.`
+      );
+      return;
+    }
+    setLoading(provider);
+    signInWith(provider);
   };
+
+  const googleEnabled = oauthProviders.includes('google');
+  const githubEnabled = oauthProviders.includes('github');
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="card-elev p-8">
@@ -39,12 +57,17 @@ export default function SignupPage() {
       <p className="mt-1.5 text-[13.5px] text-ink-muted">A quiet place for your stories. Free during beta.</p>
 
       <div className="mt-6 space-y-2">
-        <Button onClick={() => handleOAuth('google')} disabled={loading} variant="outline" className="h-11 w-full justify-center rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary">
+        <Button onClick={() => handleOAuth('google')} disabled={loading || !googleEnabled} variant="outline" className="h-11 w-full justify-center rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary disabled:opacity-50">
           {loading === 'google' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Continue with Google'}
         </Button>
-        <Button onClick={() => handleOAuth('github')} disabled={loading} variant="outline" className="h-11 w-full justify-center rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary">
+        <Button onClick={() => handleOAuth('github')} disabled={loading || !githubEnabled} variant="outline" className="h-11 w-full justify-center rounded-xl border-line bg-card text-[13.5px] font-medium hover:bg-secondary disabled:opacity-50">
           {loading === 'github' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Continue with GitHub'}
         </Button>
+        {!googleEnabled && !githubEnabled && (
+          <p className="pt-1 text-center text-[12px] text-ink-muted">
+            OAuth providers are not configured yet. Use email sign-up below.
+          </p>
+        )}
       </div>
 
       <div className="my-6 flex items-center gap-3 text-[11.5px] uppercase tracking-wider text-ink-subtle">

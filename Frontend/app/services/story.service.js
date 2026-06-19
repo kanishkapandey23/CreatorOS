@@ -1,18 +1,16 @@
-import axios from 'axios';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
+import { api } from '@/lib/api';
 
 export const storyService = {
   async list() {
-    const res = await axios.get(`${API_BASE}/stories`);
+    const res = await api.get('/stories');
     return res.data;
   },
   async get(id) {
-    const res = await axios.get(`${API_BASE}/stories/${id}`);
+    const res = await api.get(`/stories/${id}`);
     return res.data;
   },
   async create(payload) {
-    const res = await axios.post(`${API_BASE}/stories`, payload);
+    const res = await api.post('/stories', payload);
     return res.data;
   },
 };
