@@ -1,22 +1,22 @@
-import { REFLECTION_PROMPTS } from '@/lib/mock-data';
+import axios from 'axios';
 
-function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
 
 export const reflectionService = {
   async getActiveSession() {
-    await delay(120);
-    return {
-      id: 'ref_001',
-      title: 'Weekly Reflection Nudge',
-      prompts: REFLECTION_PROMPTS,
-    };
+    const res = await axios.get(`${API_BASE}/reflections/active`);
+    return res.data;
   },
-  async saveAnswer({ promptId, value }) {
-    await delay(100);
-    return { success: true };
+  async saveAnswer({ promptId, promptTitle, value }) {
+    const res = await axios.post(`${API_BASE}/reflections/answer`, {
+      promptId,
+      promptTitle,
+      value,
+    });
+    return res.data;
   },
   async complete(sessionId) {
-    await delay(200);
-    return { success: true, storiesDiscovered: 3 };
+    const res = await axios.post(`${API_BASE}/reflections/complete/${sessionId}`);
+    return res.data;
   },
 };

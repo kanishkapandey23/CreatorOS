@@ -1,18 +1,18 @@
-import { MOCK_STORIES } from '@/lib/mock-data';
+import axios from 'axios';
 
-function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
 
 export const storyService = {
   async list() {
-    await delay(120);
-    return [...MOCK_STORIES];
+    const res = await axios.get(`${API_BASE}/stories`);
+    return res.data;
   },
   async get(id) {
-    await delay(120);
-    return MOCK_STORIES.find((s) => s.id === id) || null;
+    const res = await axios.get(`${API_BASE}/stories/${id}`);
+    return res.data;
   },
-  async create(_payload) {
-    await delay(200);
-    return { id: 'new', ...(_payload || {}) };
+  async create(payload) {
+    const res = await axios.post(`${API_BASE}/stories`, payload);
+    return res.data;
   },
 };

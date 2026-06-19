@@ -3,10 +3,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpRight, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, Sparkles, Copy } from 'lucide-react';
 import { storyService } from '@/services/story.service';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
 
 export default function StoryDetailPage() {
   const params = useParams();
@@ -71,17 +72,32 @@ export default function StoryDetailPage() {
         <aside className="md:col-span-4">
           <div className="card-elev sticky top-20 p-5">
             <div className="flex items-center gap-2 text-[11.5px] font-medium uppercase tracking-wider text-ink-subtle">
-              <Sparkles className="h-3.5 w-3.5 text-brand" /> AI recommendations
+              <Sparkles className="h-3.5 w-3.5 text-brand" /> Scroll-Stopper Hooks
             </div>
             <p className="mt-2 text-[13px] leading-relaxed text-ink-muted">
-              Quiet suggestions will appear here — never written for you, always tuned to your voice.
+              Surfaced from your memory. Select a hook to copy or start writing in the workspace.
             </p>
             <div className="mt-4 space-y-2">
-              {['Refine the hook with a sharper image', 'Consider opening with the lesson', 'Try a shorter ending'].map((t) => (
-                <div key={t} className="rounded-xl border border-dashed border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-muted">
-                  {t}
+              {story.hooks && story.hooks.length > 0 ? (
+                story.hooks.map((h, i) => (
+                  <div key={i} className="group relative rounded-xl border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink leading-relaxed">
+                    <p className="pr-6">{h}</p>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(h);
+                        toast.success('Hook copied!');
+                      }}
+                      className="absolute right-2 top-2 text-ink-subtle hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-subtle italic">
+                  No hook recommendations generated yet.
                 </div>
-              ))}
+              )}
             </div>
             <p className="mt-4 text-[11px] text-ink-subtle">Recommendations will personalize as you write more.</p>
           </div>

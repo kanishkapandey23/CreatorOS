@@ -25,7 +25,7 @@ export default function ReflectionPage() {
 
   const next = async () => {
     if (!current) return;
-    await reflectionService.saveAnswer({ promptId: current.id, value });
+    await reflectionService.saveAnswer({ promptId: current.id, promptTitle: current.title, value });
     if (idx < prompts.length - 1) setIdx(idx + 1);
     else {
       setSubmitting(true);

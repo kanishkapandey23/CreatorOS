@@ -1,42 +1,26 @@
-import { MOCK_STORIES } from '@/lib/mock-data';
+import axios from 'axios';
 
-function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
 
 export const workspaceService = {
   async getHome() {
-    await delay(120);
-    return {
-      continueReflection: {
-        id: 'ref_001',
-        title: 'Tuesday Reflection',
-        progress: 3,
-        total: 6,
-      },
-      recentStories: MOCK_STORIES.slice(0, 3),
-      weeklyPlan: [
-        { day: 'Mon', title: 'Founder coffee story', status: 'draft' },
-        { day: 'Wed', title: 'Lessons from 0→1', status: 'scheduled' },
-        { day: 'Fri', title: 'Why I quit my job', status: 'idea' },
-      ],
-      balance: { story: 60, lesson: 25, opinion: 15 },
-    };
+    const res = await axios.get(`${API_BASE}/workspace`);
+    return res.data;
   },
   async getDraft(storyId) {
-    await delay(120);
-    return {
-      storyId,
-      sections: {
-        hook: 'I almost shut down the company on a Tuesday morning.',
-        experience: '',
-        conflict: '',
-        lesson: '',
-        cta: '',
-      },
-      updatedAt: new Date().toISOString(),
-    };
+    const res = await axios.get(`${API_BASE}/stories/${storyId}/draft`);
+    return res.data;
   },
-  async saveDraft(_payload) {
-    await delay(100);
-    return { ok: true, savedAt: new Date().toISOString() };
+  async saveDraft(payload) {
+    const res = await axios.post(`${API_BASE}/stories/draft`, payload);
+    return res.data;
+  },
+  async getPolishedPreview(storyId, sections) {
+    const res = await axios.post(`${API_BASE}/stories/${storyId}/preview`, { sections });
+    return res.data;
+  },
+  async getSuggestions(storyId) {
+    const res = await axios.get(`${API_BASE}/stories/${storyId}/suggestions`);
+    return res.data;
   },
 };
