@@ -5,6 +5,10 @@ export const reflectionService = {
     const res = await api.get('/reflections/active');
     return res.data;
   },
+  async startWithVibe({ mood, goal }) {
+    const res = await api.post('/reflections/start', { mood, goal });
+    return res.data;
+  },
   async saveAnswer({ promptId, promptTitle, value }) {
     const res = await api.post('/reflections/answer', {
       promptId,

@@ -1,6 +1,15 @@
 import { api } from '@/lib/api';
 
 export const strategyService = {
+  async getTrends(mood = 'reflective', format = 'linkedin_post') {
+    const res = await api.get('/strategy/trends', { params: { mood, format } });
+    return res.data;
+  },
+  async getRecommendations(payload) {
+    const res = await api.post('/strategy/recommendations', payload);
+    return res.data;
+  },
+  // Legacy chat endpoints (kept for compatibility)
   async listSessions() {
     const res = await api.get('/strategy/chat/sessions');
     return res.data;

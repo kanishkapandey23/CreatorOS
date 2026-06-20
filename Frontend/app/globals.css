@@ -54,6 +54,42 @@
     background-image: radial-gradient(rgba(24,24,27,0.025) 1px, transparent 1px);
     background-size: 22px 22px;
   }
+
+  .markdown-content {
+    @apply text-[14.5px] leading-[1.75] text-ink;
+  }
+  .markdown-content > *:first-child { @apply mt-0; }
+  .markdown-content > *:last-child { @apply mb-0; }
+  .markdown-content p { @apply my-3; }
+  .markdown-content h1 { @apply mt-7 mb-3 font-display text-[24px] font-semibold leading-tight tracking-tight text-ink; }
+  .markdown-content h2 { @apply mt-6 mb-2.5 font-display text-[20px] font-semibold leading-snug tracking-tight text-ink; }
+  .markdown-content h3 { @apply mt-5 mb-2 font-display text-[17px] font-semibold leading-snug text-ink; }
+  .markdown-content h4 { @apply mt-4 mb-1.5 font-display text-[15px] font-semibold text-ink; }
+  .markdown-content ul { @apply my-3 list-disc space-y-1.5 pl-5; }
+  .markdown-content ol { @apply my-3 list-decimal space-y-1.5 pl-5; }
+  .markdown-content li { @apply pl-1; }
+  .markdown-content li > p { @apply my-1; }
+  .markdown-content blockquote {
+    @apply my-4 border-l-[3px] border-brand/40 bg-brand-soft/30 py-2 pl-4 pr-3 italic text-ink-muted;
+  }
+  .markdown-content pre {
+    @apply my-4 overflow-x-auto rounded-xl border border-line bg-[#f6f8fa] p-4 shadow-soft;
+  }
+  .markdown-content pre code { @apply bg-transparent p-0 text-[13px]; }
+  .markdown-content table {
+    @apply my-4 w-full border-collapse overflow-hidden rounded-xl border border-line text-[13.5px];
+  }
+  .markdown-content th {
+    @apply border-b border-line bg-secondary/60 px-3 py-2 text-left font-semibold text-ink;
+  }
+  .markdown-content td {
+    @apply border-b border-line/70 px-3 py-2 text-ink-muted;
+  }
+  .markdown-content tr:last-child td { @apply border-b-0; }
+  .markdown-content hr { @apply my-6 border-0 h-px bg-line/80; }
+  .markdown-content strong { @apply font-semibold text-ink; }
+  .markdown-content em { @apply italic text-ink-muted; }
+  .markdown-content input[type='checkbox'] { @apply mr-2 accent-brand; }
 }
 
 /* Subtle scrollbar */

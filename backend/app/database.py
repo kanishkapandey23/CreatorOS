@@ -1,7 +1,7 @@
 import datetime
 import json
 import os
-from sqlalchemy import create_engine, Column, String, DateTime, Text, LargeBinary, ForeignKey, text
+from sqlalchemy import create_engine, Column, String, DateTime, Text, LargeBinary, ForeignKey, Boolean, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
@@ -32,6 +32,7 @@ class User(Base):
     opportunities = relationship("ContentOpportunity", back_populates="user")
     reflection_sessions = relationship("ReflectionSession", back_populates="user")
     chat_sessions = relationship("ChatSession", back_populates="user")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
 
 
 class CreatorProfile(Base):
@@ -197,6 +198,54 @@ class StoryDraft(Base):
         self.sections_json = json.dumps(val or {})
 
 
+class ContentDraft(Base):
+    """Content draft — one story can have many drafts (LinkedIn, Reel, etc.)."""
+
+    __tablename__ = "content_drafts"
+
+    id = Column(String, primary_key=True, index=True)
+    story_id = Column(String, ForeignKey("content_opportunities.id"), index=True, nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    format = Column(String, default="linkedin_post")
+    status = Column(String, default="draft")
+    sections_json = Column(Text, default="{}")
+    scheduled_at = Column(DateTime, nullable=True)
+    reminder_enabled = Column(Boolean, default=False)
+    reminder_offsets_json = Column(Text, default='["1d","1h"]')
+    reminder_channels_json = Column(Text, default='["in_app","email"]')
+    reminder_sent_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    @property
+    def sections(self):
+        return json.loads(self.sections_json or "{}")
+
+    @sections.setter
+    def sections(self, val):
+        self.sections_json = json.dumps(val or {})
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    type = Column(String, default="reminder")
+    title = Column(String)
+    body = Column(Text)
+    action_type = Column(String)
+    action_href = Column(String)
+    action_label = Column(String)
+    draft_id = Column(String, ForeignKey("content_drafts.id"), nullable=True)
+    story_id = Column(String, nullable=True)
+    read = Column(Boolean, default=False)
+    dismissed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="notifications")
+
+
 class ReflectionSession(Base):
     __tablename__ = "reflection_sessions"
 
@@ -204,6 +253,9 @@ class ReflectionSession(Base):
     user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
     title = Column(String)
     status = Column(String, default="active")
+    prompts_json = Column(Text, nullable=True)
+    detected_mood = Column(String, nullable=True)
+    vibe_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="reflection_sessions")
@@ -256,6 +308,7 @@ _USER_SCOPED_COLUMNS = [
     ("memories", "user_id"),
     ("content_opportunities", "user_id"),
     ("story_drafts", "user_id"),
+    ("content_drafts", "user_id"),
     ("reflection_sessions", "user_id"),
     ("chat_sessions", "user_id"),
 ]
@@ -297,6 +350,30 @@ def _migrate_creator_profile_id_to_user_id(db):
         db.rollback()
 
 
+def _migrate_story_drafts_to_content_drafts(db):
+    """One-time migration: legacy story_drafts (1:1) → content_drafts (1:many)."""
+    import uuid
+    try:
+        if db.query(ContentDraft).count() > 0:
+            return
+        legacy = db.query(StoryDraft).all()
+        for ld in legacy:
+            opp = db.query(ContentOpportunity).filter(ContentOpportunity.id == ld.story_id).first()
+            fmt = opp.content_type if opp and opp.content_type else "linkedin_post"
+            db.add(ContentDraft(
+                id=f"dr_{uuid.uuid4().hex[:8]}",
+                story_id=ld.story_id,
+                user_id=ld.user_id,
+                format=fmt,
+                status="draft",
+                sections_json=ld.sections_json or "{}",
+                updated_at=ld.updated_at or datetime.datetime.utcnow(),
+            ))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -309,6 +386,29 @@ def init_db():
             db.commit()
         except Exception:
             db.rollback()
+        _migrate_story_drafts_to_content_drafts(db)
+        for col, coltype in [("prompts_json", "TEXT"), ("detected_mood", "VARCHAR"), ("vibe_json", "TEXT")]:
+            try:
+                db.execute(text(f"ALTER TABLE reflection_sessions ADD COLUMN {col} {coltype}"))
+                db.commit()
+            except Exception:
+                db.rollback()
+        try:
+            db.execute(text("ALTER TABLE content_drafts ADD COLUMN scheduled_at DATETIME"))
+            db.commit()
+        except Exception:
+            db.rollback()
+        for col, coltype in [
+            ("reminder_enabled", "BOOLEAN"),
+            ("reminder_offsets_json", "TEXT"),
+            ("reminder_channels_json", "TEXT"),
+            ("reminder_sent_json", "TEXT"),
+        ]:
+            try:
+                db.execute(text(f"ALTER TABLE content_drafts ADD COLUMN {col} {coltype}"))
+                db.commit()
+            except Exception:
+                db.rollback()
     finally:
         db.close()
 

@@ -20,7 +20,7 @@ export function RouteGuard({ children }) {
       <div className="flex h-screen w-full items-center justify-center bg-canvas">
         <div className="flex items-center gap-3 text-ink-muted">
           <Loader2 className="h-4 w-4 animate-spin" />
-          <span className="text-[13px]">Opening your workspace…</span>
+          <span className="text-[13px]">Opening Home…</span>
         </div>
       </div>
     );

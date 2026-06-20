@@ -3,7 +3,7 @@ import uuid
 import datetime
 import logging
 from sqlalchemy.orm import Session
-from app.database import Memory, StrategyKB, ContentOpportunity, ChatSession, ChatMessage, StoryDraft
+from app.database import Memory, StrategyKB, ContentOpportunity, ChatSession, ChatMessage, ContentDraft
 from app.llm import get_llm, embedding_engine
 
 logger = logging.getLogger("creatoros.agents")
@@ -552,12 +552,14 @@ def process_strategy_chat_message(db: Session, session_id: str, message_text: st
         session.opportunity_id = opp_id
         
         # Pre-seed empty draft sections for the workspace editor
-        draft = StoryDraft(
+        draft = ContentDraft(
+            id=f"dr_{uuid.uuid4().hex[:8]}",
             story_id=opp_id,
             user_id=session.user_id,
-            sections={sec: "" for sec in opportunity.structure}
+            format=opportunity.content_type or "linkedin_post",
+            status="draft",
+            sections={sec: "" for sec in opportunity.structure},
         )
-        # Seed default hook if available
         if opportunity.hook_options:
             draft.sections = {**draft.sections, "hook": opportunity.hook_options[0]}
         db.add(draft)

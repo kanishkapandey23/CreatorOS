@@ -1,6 +1,7 @@
 'use client';
 
-import { Bell, Search, SunMedium } from 'lucide-react';
+import { NotificationBell } from '@/components/layout/notification-panel';
+import { Search, SunMedium } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
 import {
   DropdownMenu,
@@ -45,10 +46,7 @@ export function TopNav() {
         <button className="rounded-lg p-2 text-ink-muted hover:bg-secondary hover:text-ink focus-ring" aria-label="Theme">
           <SunMedium className="h-[18px] w-[18px]" />
         </button>
-        <button className="relative rounded-lg p-2 text-ink-muted hover:bg-secondary hover:text-ink focus-ring" aria-label="Notifications">
-          <Bell className="h-[18px] w-[18px]" />
-          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-brand" />
-        </button>
+        <NotificationBell />
 
         <DropdownMenu>
           <DropdownMenuTrigger className="ml-1 inline-flex items-center gap-2 rounded-xl px-1.5 py-1 hover:bg-secondary focus-ring">
@@ -70,7 +68,7 @@ export function TopNav() {
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild><Link href="/settings">Profile & settings</Link></DropdownMenuItem>
-                <DropdownMenuItem asChild><Link href="/workspace">Workspace</Link></DropdownMenuItem>
+                <DropdownMenuItem asChild><Link href="/workspace">Home</Link></DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleSignOut} className="text-danger focus:text-danger">Sign out</DropdownMenuItem>
               </>

@@ -25,7 +25,8 @@ from pydantic import BaseModel
 
 from app.database import (
     init_db, get_db, User, CreatorProfile, Memory, StrategyKB, ContentOpportunity,
-    StoryDraft, ReflectionSession, ReflectionAnswer, ChatSession, ChatMessage,
+    StoryDraft, ContentDraft, ReflectionSession, ReflectionAnswer, ChatSession, ChatMessage,
+    Notification,
 )
 from app.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -59,6 +60,10 @@ from app.agents import (
     retrieve_relevant_kb
 )
 from app.llm import get_llm
+from app.strategy_engine import get_trend_intelligence, generate_recommendations
+from app.reflection_engine import get_reflection_state, append_prompt_after_answer, MAX_REFLECTION_QUESTIONS
+from app.planner import get_planner_week
+from app.notifications.reminder_service import sync_notifications, get_weekly_digest
 
 from contextlib import asynccontextmanager
 
@@ -102,17 +107,32 @@ class StartChatPayload(BaseModel):
     memoryId: Optional[str] = None
 
 class CreateStoryPayload(BaseModel):
-    title: str
-    summary: str
-    category: str
-    emotion: str
-    potential: int
-    tags: List[str]
-    suggestedFormats: List[str]
+    title: str = "Untitled story"
+    summary: str = ""
+    category: str = "General"
+    emotion: str = "Growth"
+    potential: int = 75
+    tags: List[str] = []
+    suggestedFormats: List[str] = ["Linkedin post"]
     lesson: Optional[str] = None
+
+class UpdateStoryPayload(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
 
 class DraftPayload(BaseModel):
     storyId: str
+    sections: dict
+
+class CreateDraftPayload(BaseModel):
+    format: str = "linkedin_post"
+
+class UpdateDraftPayload(BaseModel):
+    sections: Optional[dict] = None
+    status: Optional[str] = None
+    scheduledAt: Optional[str] = None
+
+class SaveDraftPayload(BaseModel):
     sections: dict
 
 class PreviewPayload(BaseModel):
@@ -125,6 +145,30 @@ class AnswerPayload(BaseModel):
 
 class FeedbackPayload(BaseModel):
     feedback: str
+
+class VibeCheckPayload(BaseModel):
+    mood: str = "reflective"
+    contentPreference: str = "personal_story"
+    goal: str = "build_connection"
+    intent: str = "recommend_from_bank"
+    storyId: Optional[str] = None
+
+class StartReflectionPayload(BaseModel):
+    mood: Optional[str] = None
+    goal: Optional[str] = None
+
+class ScheduleDraftPayload(BaseModel):
+    scheduledAt: Optional[str] = None
+    scheduledDay: Optional[str] = None
+    dayIso: Optional[str] = None
+    reminderEnabled: Optional[bool] = True
+    reminderOffsets: Optional[List[str]] = None
+    reminderChannels: Optional[List[str]] = None
+
+class ReminderPayload(BaseModel):
+    reminderEnabled: bool = True
+    reminderOffsets: List[str] = ["1d", "1h"]
+    reminderChannels: List[str] = ["in_app", "email"]
 
 # ----------------------------------------------------
 # Auth helpers
@@ -155,6 +199,98 @@ def _get_user_chat_session(db: Session, session_id: str, user_id: str) -> ChatSe
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found")
     return session
+
+
+DRAFT_FORMAT_LABELS = {
+    "linkedin_post": "LinkedIn Post",
+    "instagram_reel": "Instagram Reel",
+    "carousel": "Carousel",
+    "twitter_thread": "Twitter Thread",
+}
+
+
+def _enrich_story(opportunity: ContentOpportunity) -> dict:
+    linked_mem = opportunity.memory
+    category = "Storyteller"
+    emotion = "Insight"
+    potential = 85
+    tags = []
+    summary = ""
+    lesson = ""
+
+    if linked_mem:
+        category = linked_mem.topic[0].capitalize() if linked_mem.topic else "Journey"
+        emotion = linked_mem.emotion[0].capitalize() if linked_mem.emotion else "Growth"
+        potential = 90 if linked_mem.turning_point else 75
+        tags = linked_mem.topic
+        summary = linked_mem.event
+        lesson = linked_mem.turning_point or "Learn through persistence"
+    else:
+        if "gave up" in opportunity.topic.lower():
+            category = "Founder Journey"
+            emotion = "Vulnerability"
+            potential = 92
+            tags = ["founder", "resilience"]
+            summary = "A quiet morning where I sat with the idea of walking away — and what made me stay."
+            lesson = "Conviction is rebuilt in small moments, not big speeches."
+        elif "100 users" in opportunity.topic.lower():
+            category = "Product"
+            emotion = "Curiosity"
+            potential = 81
+            tags = ["product", "users"]
+            summary = "Patterns I noticed when I stopped reading dashboards and started reading messages."
+            lesson = "Listen at the edges. The middle of your data already agrees with you."
+        else:
+            category = "General"
+            emotion = "Growth"
+            potential = 78
+            tags = opportunity.creator_inputs_used
+            summary = f"A structured opportunity detailing: {opportunity.topic}."
+            lesson = "Focus on authentic insights."
+
+    return {
+        "category": category,
+        "emotion": emotion,
+        "potential": potential,
+        "tags": tags,
+        "summary": summary or opportunity.topic,
+        "lesson": lesson,
+    }
+
+
+def _draft_to_response(draft: ContentDraft) -> dict:
+    return {
+        "id": draft.id,
+        "storyId": draft.story_id,
+        "format": draft.format,
+        "formatLabel": DRAFT_FORMAT_LABELS.get(draft.format, draft.format.replace("_", " ").title()),
+        "status": draft.status,
+        "sections": draft.sections,
+        "scheduledAt": draft.scheduled_at.isoformat() if draft.scheduled_at else None,
+        "reminderEnabled": bool(draft.reminder_enabled),
+        "reminderOffsets": json.loads(draft.reminder_offsets_json or '["1d","1h"]'),
+        "reminderChannels": json.loads(draft.reminder_channels_json or '["in_app","email"]'),
+        "reminderActive": bool(draft.reminder_enabled and draft.scheduled_at),
+        "createdAt": draft.created_at.isoformat() if draft.created_at else None,
+        "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
+    }
+
+
+def _get_user_draft(db: Session, draft_id: str, user_id: str) -> ContentDraft:
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.id == draft_id,
+        ContentDraft.user_id == user_id,
+    ).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+
+def _draft_count(db: Session, story_id: str, user_id: str) -> int:
+    return db.query(ContentDraft).filter(
+        ContentDraft.story_id == story_id,
+        ContentDraft.user_id == user_id,
+    ).count()
 
 # ----------------------------------------------------
 # Auth routes
@@ -303,8 +439,15 @@ def get_workspace_home(current_user: User = Depends(get_current_user), db: Sessi
             opp.creator_inputs_used = item["creator_inputs_used"]
             db.add(opp)
             
-            # Preseed draft
-            draft = StoryDraft(story_id=item["id"], user_id=user_id, sections={sec: "" for sec in opp.structure})
+            # Preseed content draft
+            draft = ContentDraft(
+                id=f"dr_{uuid.uuid4().hex[:8]}",
+                story_id=item["id"],
+                user_id=user_id,
+                format=item["content_type"],
+                status="draft",
+                sections={sec: "" for sec in opp.structure},
+            )
             if opp.hook_options:
                 draft.sections = {**draft.sections, "hook": opp.hook_options[0]}
             db.add(draft)
@@ -379,12 +522,83 @@ def get_workspace_home(current_user: User = Depends(get_current_user), db: Sessi
     }
 
 # --- REFLECTION FLOWS ---
-REFLECTION_PROMPTS = [
-  {"id": "p1", "title": "What made you pause this week?", "hint": "A small moment is enough. A line someone said. A thought during a walk."},
-  {"id": "p2", "title": "What did you change your mind about?", "hint": "Even a tiny shift in opinion is a story worth telling."},
-  {"id": "p3", "title": "What did you build, ship or finish?", "hint": "No accomplishment is too small. Describe how it felt."},
-  {"id": "p4", "title": "Where did you struggle?", "hint": "Friction makes the best stories. Be honest with yourself."}
-]
+REFLECTION_OPENER_FALLBACK = {
+    "id": "p1",
+    "sectionTitle": "Checking in",
+    "title": "What's been sitting with you lately?",
+    "hint": "A feeling, a conversation, a moment you keep replaying. No need to have it figured out.",
+}
+
+
+def _derive_section_title(prompt_title: str) -> str:
+    """Generate a concise section label from a reflection prompt question."""
+    title = (prompt_title or "").strip().rstrip("?").strip()
+    if not title:
+        return "Reflection"
+    lower = title.lower()
+    keyword_map = [
+        (("feel", "mood", "emotion", "heart"), "How you're feeling"),
+        (("moment", "when", "where", "happened"), "The moment"),
+        (("change", "shift", "realize", "learn"), "What shifted"),
+        (("relationship", "friend", "family", "person"), "Someone who mattered"),
+        (("struggle", "stuck", "hard", "difficult"), "What was hard"),
+        (("grateful", "thankful", "appreciate"), "Gratitude"),
+        (("memory", "remember", "childhood", "past"), "A memory"),
+        (("conversation", "talk", "said", "told"), "A conversation"),
+        (("week", "lately", "recent", "today"), "Checking in"),
+    ]
+    for keywords, label in keyword_map:
+        if any(k in lower for k in keywords):
+            return label
+    words = [w for w in title.split() if w.lower() not in {"what", "how", "why", "when", "where", "did", "you", "your", "the", "a", "an", "is", "are", "was", "were", "about", "this", "that", "can"}]
+    if not words:
+        words = title.split()[:4]
+    label = " ".join(words[:4]).strip()
+    return label[:48] if label else "Reflection"
+
+
+def _enrich_prompt(prompt: dict) -> dict:
+    item = dict(prompt)
+    item["sectionTitle"] = item.get("sectionTitle") or _derive_section_title(item.get("title", ""))
+    return item
+
+@app.post("/api/reflections/start")
+def start_reflection(
+    payload: StartReflectionPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Start a fresh reflection — optionally seeded from Strategist vibe check."""
+    user_id = current_user.id
+    active = db.query(ReflectionSession).filter(
+        ReflectionSession.user_id == user_id,
+        ReflectionSession.status == "active",
+    ).all()
+    for s in active:
+        s.status = "completed"
+
+    vibe = None
+    if payload.mood:
+        vibe = {"mood": payload.mood, "goal": payload.goal or "express_myself"}
+
+    session = ReflectionSession(
+        id=f"ref_{uuid.uuid4().hex[:8]}",
+        user_id=user_id,
+        title="Life Reflection",
+        status="active",
+        vibe_json=json.dumps(vibe) if vibe else None,
+        detected_mood=payload.mood,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    profile = _get_creator_profile(db, user_id)
+    state = get_reflection_state(db, session, profile)
+    current = state.get("currentPrompt")
+    if current:
+        state["currentPrompt"] = _enrich_prompt(current)
+    return state
 
 @app.get("/api/reflections/active")
 def get_active_reflection(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -394,59 +608,18 @@ def get_active_reflection(current_user: User = Depends(get_current_user), db: Se
         ReflectionSession.status == "active",
     ).first()
     if not session:
-        import uuid
         session_id = f"ref_{uuid.uuid4().hex[:8]}"
-        session = ReflectionSession(id=session_id, user_id=user_id, title="Weekly Reflection Nudge", status="active")
+        session = ReflectionSession(id=session_id, user_id=user_id, title="Life Reflection", status="active")
         db.add(session)
         db.commit()
         db.refresh(session)
-        
-    # Get creator profile and recent memories to make prompts dynamic
+
     profile = _get_creator_profile(db, user_id)
-    recent_memories = db.query(Memory).filter(Memory.user_id == user_id).order_by(Memory.created_at.desc()).limit(5).all()
-    
-    niche = profile.niche
-    interests = profile.interests
-    
-    llm = get_llm()
-    system_prompt = (
-        "You are Agent 1: Creator Memory Engine.\n"
-        "Your task is to generate 4 personalized, non-repetitive reflection prompts for the creator.\n"
-        "These prompts must be tailored to their niche and interests, and reference their recent memory history (to avoid duplicate questions and help them dive deeper into recent events).\n"
-        "You must output ONLY valid JSON matching this schema:\n"
-        "[\n"
-        "  { \"id\": \"p1\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p2\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p3\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p4\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" }\n"
-        "]"
-    )
-    user_prompt = (
-        f"Creator Niche: {niche}\n"
-        f"Creator Interests: {', '.join(interests)}\n"
-        f"Recent Memory Events:\n" + "\n".join([f"- {m.event} ({', '.join(m.topic)})" for m in recent_memories])
-    )
-    
-    prompts = REFLECTION_PROMPTS
-    try:
-        llm_output = llm.generate(system_prompt, user_prompt)
-        cleaned_json = llm_output
-        if "```json" in llm_output:
-            cleaned_json = llm_output.split("```json")[-1].split("```")[0].strip()
-        elif "```" in llm_output:
-            cleaned_json = llm_output.split("```")[-1].split("```")[0].strip()
-        
-        parsed = json.loads(cleaned_json)
-        if isinstance(parsed, list) and len(parsed) == 4:
-            prompts = parsed
-    except Exception as e:
-        logger.error(f"Error generating dynamic reflection prompts: {e}. Falling back to default prompts.")
-        
-    return {
-        "id": session.id,
-        "title": session.title,
-        "prompts": prompts
-    }
+    state = get_reflection_state(db, session, profile)
+    current = state.get("currentPrompt")
+    if current:
+        state["currentPrompt"] = _enrich_prompt(current)
+    return state
 
 @app.post("/api/reflections/answer")
 def save_reflection_answer(
@@ -461,34 +634,41 @@ def save_reflection_answer(
     ).first()
     if not session:
         raise HTTPException(status_code=400, detail="No active reflection session found.")
-        
-    # Find matching prompt title by getting active prompts (bypass LLM call if promptTitle is supplied directly)
-    prompt_title = payload.promptTitle
-    if not prompt_title:
-        active_res = get_active_reflection(current_user=current_user, db=db)
-        prompt_title = next((p["title"] for p in active_res["prompts"] if p["id"] == payload.promptId), "Reflection")
-    
-    # Save or update answer
+
+    prompt_title = payload.promptTitle or "Reflection"
+
     existing = db.query(ReflectionAnswer).filter(
         ReflectionAnswer.session_id == session.id,
         ReflectionAnswer.prompt_id == payload.promptId
     ).first()
-    
+
     if existing:
         existing.answer_text = payload.value
+        existing.prompt_title = prompt_title
     else:
         ans_id = f"ans_{uuid.uuid4().hex[:8]}"
-        new_ans = ReflectionAnswer(
+        db.add(ReflectionAnswer(
             id=ans_id,
             session_id=session.id,
             prompt_id=payload.promptId,
             prompt_title=prompt_title,
-            answer_text=payload.value
-        )
-        db.add(new_ans)
-        
+            answer_text=payload.value,
+        ))
+
     db.commit()
-    return {"success": True}
+
+    answers = db.query(ReflectionAnswer).filter(
+        ReflectionAnswer.session_id == session.id,
+    ).order_by(ReflectionAnswer.created_at.asc()).all()
+
+    profile = _get_creator_profile(db, user_id)
+    result = append_prompt_after_answer(db, session, profile, answers)
+
+    next_prompt = result.get("nextPrompt")
+    if next_prompt:
+        result["nextPrompt"] = _enrich_prompt(next_prompt)
+
+    return {"success": True, **result}
 
 @app.post("/api/reflections/complete/{session_id}")
 def complete_reflection(
@@ -511,93 +691,33 @@ def complete_reflection(
     stories_discovered = 0
     
     for ans in answers:
+        if stories_discovered >= 3:
+            break
         if ans.answer_text.strip() and len(ans.answer_text.strip()) > 3:
-            # Trigger Agent 1 Memory Engine pipeline on each meaningful answer
             try:
-                # Use a nested transaction (savepoint) to isolate commits/rollbacks per answer
                 with db.begin_nested():
-                    # 1. Extract Memory (Agent 1)
                     memory = process_memory_extraction(db, ans.answer_text, current_user.id)
-                    stories_discovered += 1
-                    
-                    # 2. Immediately generate Content Opportunity (Agent 2 RAG)
-                    # Retrieve dynamic framework or trend using dynamic RAG (semantic search)
-                    query_str = f"{memory.event} {' '.join(memory.topic)} {' '.join(memory.emotion)} {memory.memory_type}"
-                    kb_items = retrieve_relevant_kb(db, query=query_str, limit=1)
-                    kb_item = kb_items[0] if kb_items else db.query(StrategyKB).filter(StrategyKB.kb_type != "pattern").first()
-                    framework_content = kb_item.content if kb_item else "Storytelling Framework"
-                    
-                    llm = get_llm()
-                    system_prompt = (
-                        "You are Agent 2: Creative Strategy Agent.\n"
-                        "You must structure an initial content opportunity from this creator memory.\n"
-                        f"Use this storytelling structure or trend layout:\n{framework_content}\n\n"
-                        "Rely ONLY on the provided memory details. Output ONLY valid JSON matching this schema:\n"
-                        "{\n"
-                        "  \"content_type\": \"story_reel\" | \"linkedin_post\" | \"newsletter\",\n"
-                        "  \"topic\": \"summarized topic\",\n"
-                        "  \"hook_options\": [\"hook1\", \"hook2\"],\n"
-                        "  \"structure\": [\"context\", \"problem\", \"realization\", \"lesson\"],\n"
-                        "  \"creator_inputs_used\": [\"input1\", \"input2\"]\n"
-                        "}"
-                    )
-                    user_prompt = (
-                        f"Active Memory Event: {memory.event}\n"
-                        f"Active Memory Turning Point: {memory.turning_point or 'None'}\n"
-                        f"Active Memory Emotions: {', '.join(memory.emotion)}\n"
-                        f"Active Memory Topics: {', '.join(memory.topic)}\n"
-                        f"Raw Text Context: {ans.answer_text}"
-                    )
-                    
-                    opp_json_str = llm.generate(system_prompt, user_prompt)
-                    
-                    # Clean formatting
-                    cleaned_json = opp_json_str
-                    if "```json" in opp_json_str:
-                        cleaned_json = opp_json_str.split("```json")[-1].split("```")[0].strip()
-                    elif "```" in opp_json_str:
-                        cleaned_json = opp_json_str.split("```")[-1].split("```")[0].strip()
-                        
-                    try:
-                        opportunity_data = json.loads(cleaned_json)
-                    except Exception:
-                        # Fallback to mock structuring using the memory details
-                        from app.llm import mock_llm_client
-                        fallback_json = mock_llm_client._structure_opportunity(user_prompt)
-                        opportunity_data = json.loads(fallback_json)
-                    
-                    # Save the new opportunity directly to the database
                     opp_id = f"st_{uuid.uuid4().hex[:8]}"
                     opportunity = ContentOpportunity(
                         id=opp_id,
                         user_id=current_user.id,
                         memory_id=memory.id,
-                        content_type=opportunity_data.get("content_type", "linkedin_post"),
-                        topic=opportunity_data.get("topic", memory.event),
-                        status="idea"
+                        content_type="story",
+                        topic=memory.event[:120] if memory.event else "Untitled moment",
+                        status="idea",
                     )
-                    opportunity.hook_options = opportunity_data.get("hook_options", [])
-                    opportunity.structure = opportunity_data.get("structure", ["context", "problem", "lesson"])
-                    opportunity.creator_inputs_used = opportunity_data.get("creator_inputs_used", memory.topic)
+                    opportunity.hook_options = []
+                    opportunity.structure = []
+                    opportunity.creator_inputs_used = memory.topic
                     db.add(opportunity)
-                    
-                    # Seed draft
-                    draft = StoryDraft(
-                        story_id=opp_id,
-                        user_id=current_user.id,
-                        sections={sec: "" for sec in opportunity.structure}
-                    )
-                    if opportunity.hook_options:
-                        draft.sections = {**draft.sections, "hook": opportunity.hook_options[0]}
-                    db.add(draft)
+                    stories_discovered += 1
                 db.commit()
-                
             except Exception as e:
-                logger.error(f"Error processing Agent 1/2 pipeline: {e}")
-                
+                logger.error(f"Error processing memory extraction: {e}")
+
     return {
         "success": True,
-        "storiesDiscovered": max(stories_discovered, 1) # guarantees at least 1 discovery count for UI response
+        "storiesDiscovered": stories_discovered,
     }
 
 # --- MEMORIES ---
@@ -628,113 +748,40 @@ def list_stories(current_user: User = Depends(get_current_user), db: Session = D
     ).order_by(ContentOpportunity.created_at.desc()).all()
     results = []
     for o in opps:
-        linked_mem = o.memory
-        category = "Storyteller"
-        emotion = "Insight"
-        potential = 85
-        tags = []
-        summary = ""
-        lesson = ""
-        
-        if linked_mem:
-            category = linked_mem.topic[0].capitalize() if linked_mem.topic else "Journey"
-            emotion = linked_mem.emotion[0].capitalize() if linked_mem.emotion else "Growth"
-            potential = 90 if linked_mem.turning_point else 75
-            tags = linked_mem.topic
-            summary = linked_mem.event
-            lesson = linked_mem.turning_point or "Learn through persistence"
-        else:
-            if "gave up" in o.topic.lower():
-                category = "Founder Journey"
-                emotion = "Vulnerability"
-                potential = 92
-                tags = ["founder", "resilience"]
-                summary = "A quiet morning where I sat with the idea of walking away — and what made me stay."
-                lesson = "Conviction is rebuilt in small moments, not big speeches."
-            elif "100 users" in o.topic.lower():
-                category = "Product"
-                emotion = "Curiosity"
-                potential = 81
-                tags = ["product", "users"]
-                summary = "Patterns I noticed when I stopped reading dashboards and started reading messages."
-                lesson = "Listen at the edges. The middle of your data already agrees with you."
-            else:
-                category = "General"
-                emotion = "Growth"
-                potential = 78
-                tags = o.creator_inputs_used
-                summary = f"A structured opportunity detailing: {o.topic}."
-                lesson = "Focus on authentic insights."
-
+        meta = _enrich_story(o)
         results.append({
             "id": o.id,
             "title": o.topic,
-            "emotion": emotion,
-            "category": category,
+            "emotion": meta["emotion"],
+            "category": meta["category"],
             "status": o.status,
-            "potential": potential,
+            "potential": meta["potential"],
             "createdAt": o.created_at.strftime("%Y-%m-%d"),
-            "summary": summary or o.topic,
-            "lesson": lesson,
-            "tags": tags,
+            "summary": meta["summary"],
+            "lesson": meta["lesson"],
+            "tags": meta["tags"],
+            "draftCount": _draft_count(db, o.id, current_user.id),
             "suggestedFormats": [o.content_type.replace("_", " ").capitalize()],
-            "hooks": o.hook_options
+            "hooks": o.hook_options,
         })
     return results
 
 @app.get("/api/stories/{story_id}")
 def get_story(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     o = _get_user_opportunity(db, story_id, current_user.id)
-        
-    linked_mem = o.memory
-    category = "Storyteller"
-    emotion = "Insight"
-    potential = 85
-    tags = []
-    summary = ""
-    lesson = ""
-    
-    if linked_mem:
-        category = linked_mem.topic[0].capitalize() if linked_mem.topic else "Journey"
-        emotion = linked_mem.emotion[0].capitalize() if linked_mem.emotion else "Growth"
-        potential = 90 if linked_mem.turning_point else 75
-        tags = linked_mem.topic
-        summary = linked_mem.event
-        lesson = linked_mem.turning_point or "Learn through persistence"
-    else:
-        if "gave up" in o.topic.lower():
-            category = "Founder Journey"
-            emotion = "Vulnerability"
-            potential = 92
-            tags = ["founder", "resilience"]
-            summary = "A quiet morning where I sat with the idea of walking away — and what made me stay."
-            lesson = "Conviction is rebuilt in small moments, not big speeches."
-        elif "100 users" in o.topic.lower():
-            category = "Product"
-            emotion = "Curiosity"
-            potential = 81
-            tags = ["product", "users"]
-            summary = "Patterns I noticed when I stopped reading dashboards and started reading messages."
-            lesson = "Listen at the edges. The middle of your data already agrees with you."
-        else:
-            category = "General"
-            emotion = "Growth"
-            potential = 78
-            tags = o.creator_inputs_used
-            summary = f"A structured opportunity detailing: {o.topic}."
-            lesson = "Focus on authentic insights."
-
+    meta = _enrich_story(o)
     return {
         "id": o.id,
         "title": o.topic,
-        "emotion": emotion,
-        "category": category,
+        "emotion": meta["emotion"],
+        "category": meta["category"],
         "status": o.status,
-        "potential": potential,
+        "potential": meta["potential"],
         "createdAt": o.created_at.strftime("%Y-%m-%d"),
-        "summary": summary or o.topic,
-        "lesson": lesson,
-        "tags": tags,
+        "summary": meta["summary"],
+        "lesson": meta["lesson"],
+        "tags": meta["tags"],
+        "draftCount": _draft_count(db, o.id, current_user.id),
         "suggestedFormats": [o.content_type.replace("_", " ").capitalize()],
         "hooks": o.hook_options,
         "structure": o.structure,
@@ -760,45 +807,148 @@ def create_story(
     opp.creator_inputs_used = payload.tags
     
     db.add(opp)
-    
-    # Save a draft
-    draft = StoryDraft(
+
+    draft = ContentDraft(
+        id=f"dr_{uuid.uuid4().hex[:8]}",
         story_id=opp_id,
         user_id=current_user.id,
+        format="linkedin_post",
+        status="draft",
         sections={
             "hook": payload.title,
             "experience": payload.summary,
             "conflict": "",
             "lesson": payload.lesson or "",
-            "cta": ""
-        }
+            "cta": "",
+        },
     )
     db.add(draft)
     
     db.commit()
     return {"id": opp_id, "title": payload.title}
 
-# --- WORKSPACE DRAFTS ---
+@app.patch("/api/stories/{story_id}")
+def update_story(
+    story_id: str,
+    payload: UpdateStoryPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = _get_user_opportunity(db, story_id, current_user.id)
+    if payload.title is not None:
+        opp.topic = payload.title.strip() or "Untitled story"
+    if payload.status is not None:
+        opp.status = payload.status
+    db.commit()
+    db.refresh(opp)
+    return {"ok": True, "id": opp.id, "title": opp.topic, "status": opp.status}
+
+@app.delete("/api/stories/{story_id}")
+def delete_story(
+    story_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = _get_user_opportunity(db, story_id, current_user.id)
+    db.query(ContentDraft).filter(
+        ContentDraft.story_id == story_id,
+        ContentDraft.user_id == current_user.id,
+    ).delete()
+    db.query(StoryDraft).filter(
+        StoryDraft.story_id == story_id,
+        StoryDraft.user_id == current_user.id,
+    ).delete()
+    db.delete(opp)
+    db.commit()
+    return {"ok": True, "id": story_id}
+
+# --- CONTENT DRAFTS (Studio) ---
+@app.get("/api/stories/{story_id}/drafts")
+def list_story_drafts(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _get_user_opportunity(db, story_id, current_user.id)
+    drafts = db.query(ContentDraft).filter(
+        ContentDraft.story_id == story_id,
+        ContentDraft.user_id == current_user.id,
+    ).order_by(ContentDraft.updated_at.desc()).all()
+    return [_draft_to_response(d) for d in drafts]
+
+
+@app.post("/api/stories/{story_id}/drafts")
+def create_content_draft(
+    story_id: str,
+    payload: CreateDraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_user_opportunity(db, story_id, current_user.id)
+    fmt = payload.format if payload.format in DRAFT_FORMAT_LABELS else "linkedin_post"
+    draft = ContentDraft(
+        id=f"dr_{uuid.uuid4().hex[:8]}",
+        story_id=story_id,
+        user_id=current_user.id,
+        format=fmt,
+        status="draft",
+        sections={"hook": "", "experience": "", "conflict": "", "lesson": "", "cta": ""},
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _draft_to_response(draft)
+
+
+@app.get("/api/drafts/{draft_id}")
+def get_content_draft(draft_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _draft_to_response(_get_user_draft(db, draft_id, current_user.id))
+
+
+@app.patch("/api/drafts/{draft_id}")
+def update_content_draft(
+    draft_id: str,
+    payload: UpdateDraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    if payload.sections is not None:
+        draft.sections = payload.sections
+    if payload.status is not None:
+        draft.status = payload.status
+    if payload.scheduledAt is not None:
+        from datetime import datetime
+        draft.scheduled_at = datetime.fromisoformat(payload.scheduledAt.replace("Z", "+00:00")) if payload.scheduledAt else None
+        if draft.scheduled_at and draft.status == "draft":
+            draft.status = "scheduled"
+    db.commit()
+    db.refresh(draft)
+    return _draft_to_response(draft)
+
+
+@app.delete("/api/drafts/{draft_id}")
+def delete_content_draft(draft_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    db.delete(draft)
+    db.commit()
+    return {"ok": True, "id": draft_id}
+
+
+# --- LEGACY WORKSPACE DRAFTS (compat) ---
 @app.get("/api/stories/{story_id}/draft")
 def get_story_draft(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _get_user_opportunity(db, story_id, current_user.id)
-    draft = db.query(StoryDraft).filter(
-        StoryDraft.story_id == story_id,
-        StoryDraft.user_id == current_user.id,
-    ).first()
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.story_id == story_id,
+        ContentDraft.user_id == current_user.id,
+    ).order_by(ContentDraft.updated_at.desc()).first()
     if not draft:
-        # Preseed empty sections
         sections = {"hook": "", "experience": "", "conflict": "", "lesson": "", "cta": ""}
-        return {
-            "storyId": story_id,
-            "sections": sections,
-            "updatedAt": None
-        }
+        return {"storyId": story_id, "sections": sections, "updatedAt": None}
     return {
         "storyId": draft.story_id,
+        "draftId": draft.id,
         "sections": draft.sections,
-        "updatedAt": draft.updated_at.isoformat()
+        "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
     }
+
 
 @app.post("/api/stories/draft")
 def save_story_draft(
@@ -807,17 +957,40 @@ def save_story_draft(
     db: Session = Depends(get_db),
 ):
     _get_user_opportunity(db, payload.storyId, current_user.id)
-    draft = db.query(StoryDraft).filter(
-        StoryDraft.story_id == payload.storyId,
-        StoryDraft.user_id == current_user.id,
-    ).first()
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.story_id == payload.storyId,
+        ContentDraft.user_id == current_user.id,
+    ).order_by(ContentDraft.updated_at.desc()).first()
     if not draft:
-        draft = StoryDraft(story_id=payload.storyId, user_id=current_user.id)
+        draft = ContentDraft(
+            id=f"dr_{uuid.uuid4().hex[:8]}",
+            story_id=payload.storyId,
+            user_id=current_user.id,
+            format="linkedin_post",
+            status="draft",
+        )
         db.add(draft)
-    
     draft.sections = payload.sections
     db.commit()
-    return {"ok": True, "savedAt": draft.updated_at.isoformat()}
+    db.refresh(draft)
+    return {"ok": True, "savedAt": draft.updated_at.isoformat(), "draftId": draft.id}
+
+
+@app.post("/api/drafts/{draft_id}/save")
+def save_content_draft(
+    draft_id: str,
+    payload: SaveDraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    draft.sections = payload.sections
+    db.commit()
+    db.refresh(draft)
+    return {"ok": True, "savedAt": draft.updated_at.isoformat(), "draftId": draft.id}
+
+
+# --- WORKSPACE DRAFTS (deprecated alias) ---
 
 @app.post("/api/stories/{story_id}/preview")
 def get_story_preview(
@@ -856,10 +1029,10 @@ def get_story_preview(
 @app.get("/api/stories/{story_id}/suggestions")
 def get_story_suggestions(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     opportunity = _get_user_opportunity(db, story_id, current_user.id)
-    draft = db.query(StoryDraft).filter(
-        StoryDraft.story_id == story_id,
-        StoryDraft.user_id == current_user.id,
-    ).first()
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.story_id == story_id,
+        ContentDraft.user_id == current_user.id,
+    ).order_by(ContentDraft.updated_at.desc()).first()
     
     if not draft or not any(draft.sections.values()):
         return {
@@ -902,7 +1075,171 @@ def get_story_suggestions(story_id: str, current_user: User = Depends(get_curren
             ]
         }
 
-# --- AGENT 2: CREATIVE STRATEGY CHAT FLOWS ---
+@app.get("/api/strategy/trends")
+def get_strategy_trends(
+    mood: str = "reflective",
+    format: str = "linkedin_post",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_trend_intelligence(db, mood=mood, fmt=format)
+
+@app.get("/api/planner/week")
+def get_planner_week_view(
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_planner_week(db, current_user.id, offset)
+
+@app.post("/api/drafts/{draft_id}/schedule")
+def schedule_draft(
+    draft_id: str,
+    payload: ScheduleDraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from datetime import datetime
+    from app.india_trends import next_posting_datetime, IST
+
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    if payload.dayIso:
+        from datetime import datetime
+        from app.india_trends import IST
+        d = datetime.fromisoformat(payload.dayIso).date()
+        draft.scheduled_at = datetime(d.year, d.month, d.day, 19, 30, tzinfo=IST)
+    elif payload.scheduledAt:
+        from datetime import datetime
+        draft.scheduled_at = datetime.fromisoformat(payload.scheduledAt.replace("Z", "+00:00"))
+    elif payload.scheduledDay:
+        day, time = payload.scheduledDay.split("|") if "|" in payload.scheduledDay else (payload.scheduledDay, "7:30 PM IST")
+        draft.scheduled_at = next_posting_datetime(day.strip(), time.strip())
+    else:
+        draft.scheduled_at = None
+    draft.status = "scheduled" if draft.scheduled_at else "draft"
+    if payload.reminderEnabled is not False and draft.scheduled_at:
+        draft.reminder_enabled = True
+        if payload.reminderOffsets:
+            draft.reminder_offsets_json = json.dumps(payload.reminderOffsets)
+        if payload.reminderChannels:
+            draft.reminder_channels_json = json.dumps(payload.reminderChannels)
+        draft.reminder_sent_json = "{}"
+    elif payload.reminderEnabled is False:
+        draft.reminder_enabled = False
+    db.commit()
+    db.refresh(draft)
+    return _draft_to_response(draft)
+
+@app.patch("/api/drafts/{draft_id}/reminders")
+def update_draft_reminders(
+    draft_id: str,
+    payload: ReminderPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    draft.reminder_enabled = payload.reminderEnabled
+    draft.reminder_offsets_json = json.dumps(payload.reminderOffsets)
+    draft.reminder_channels_json = json.dumps(payload.reminderChannels)
+    draft.reminder_sent_json = "{}"
+    db.commit()
+    db.refresh(draft)
+    return _draft_to_response(draft)
+
+# --- NOTIFICATIONS & ACCOUNTABILITY ---
+@app.get("/api/notifications")
+def list_notifications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    items = sync_notifications(db, current_user.id)
+    unread = sum(1 for n in items if not n.get("read"))
+    return {"notifications": items, "unreadCount": unread}
+
+@app.post("/api/notifications/{notif_id}/read")
+def mark_notification_read(
+    notif_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    n = db.query(Notification).filter(
+        Notification.id == notif_id,
+        Notification.user_id == current_user.id,
+    ).first()
+    if n:
+        n.read = True
+        db.commit()
+    return {"ok": True}
+
+@app.post("/api/notifications/{notif_id}/dismiss")
+def dismiss_notification(
+    notif_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    n = db.query(Notification).filter(
+        Notification.id == notif_id,
+        Notification.user_id == current_user.id,
+    ).first()
+    if n:
+        n.dismissed = True
+        n.read = True
+        db.commit()
+    return {"ok": True}
+
+@app.post("/api/notifications/{notif_id}/complete")
+def complete_from_notification(
+    notif_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    n = db.query(Notification).filter(
+        Notification.id == notif_id,
+        Notification.user_id == current_user.id,
+    ).first()
+    if n and n.draft_id:
+        draft = _get_user_draft(db, n.draft_id, current_user.id)
+        draft.status = "published"
+        draft.reminder_enabled = False
+    if n:
+        n.dismissed = True
+        n.read = True
+        db.commit()
+    return {"ok": True}
+
+@app.get("/api/notifications/digest")
+def weekly_digest(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_weekly_digest(db, current_user.id)
+
+@app.get("/api/notifications/channels")
+def list_notification_channels():
+    from app.notifications.channels import AVAILABLE_CHANNELS, FUTURE_CHANNELS
+    return {
+        "available": AVAILABLE_CHANNELS,
+        "comingSoon": FUTURE_CHANNELS,
+    }
+
+# --- STRATEGY: VIBE CHECK + RECOMMENDATIONS ---
+@app.post("/api/strategy/recommendations")
+def get_strategy_recommendations(
+    payload: VibeCheckPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return generate_recommendations(
+        db=db,
+        user_id=current_user.id,
+        mood=payload.mood,
+        content_preference=payload.contentPreference,
+        goal=payload.goal,
+        intent=payload.intent,
+        focus_story_id=payload.storyId,
+    )
+
+# --- AGENT 2: CREATIVE STRATEGY CHAT FLOWS (legacy) ---
 @app.get("/api/strategy/chat/sessions")
 def list_chat_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     sessions = db.query(ChatSession).filter(

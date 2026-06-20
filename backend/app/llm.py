@@ -291,7 +291,11 @@ class MockLLMClient:
         cleaned_user = user_prompt.strip()
         combined_prompt = system_prompt + "\n" + cleaned_user
         
-        # Check if this is a prompts generation request
+        # Adaptive reflection (life-focused, mood-aware)
+        if "personal life stories" in system_prompt.lower() or "warm, thoughtful companion" in system_prompt.lower():
+            return self._generate_adaptive_reflection(combined_prompt)
+
+        # Legacy batch reflection prompts
         if "generate 4 personalized" in system_prompt.lower() or "reflection prompts" in system_prompt.lower():
             return self._generate_reflection_prompts(combined_prompt)
             
@@ -316,27 +320,70 @@ class MockLLMClient:
             
         return "I'm not sure how to process this command. Please refine."
 
+    def _generate_adaptive_reflection(self, combined_prompt: str) -> str:
+        """Life-focused opener or mood-aware follow-up based on prior answers."""
+        lower = combined_prompt.lower()
+
+        if "follow-up question" in lower or "conversation so far" in lower:
+            mood = "reflective"
+            for m in ["happy", "emotional", "motivated", "nostalgic", "funny", "uncertain"]:
+                if f"vibe so far: {m}" in lower or f"detected vibe so far: {m}" in lower:
+                    mood = m
+                    break
+            for m, keywords in {
+                "emotional": ["cry", "sad", "hurt", "miss", "anxious"],
+                "happy": ["happy", "grateful", "excited", "laugh"],
+                "motivated": ["motivated", "driven", "goal"],
+                "nostalgic": ["remember", "childhood", "used to"],
+            }.items():
+                if any(k in lower for k in keywords):
+                    mood = m
+                    break
+
+            # Pull a snippet from the user's answer for personalization
+            answer_match = re.search(r"A:\s*(.{20,120})", combined_prompt)
+            snippet = answer_match.group(1).strip() if answer_match else "that moment"
+
+            if "follow-up question #2" in lower or '"id": "p2"' in lower:
+                prompt = {
+                    "detectedMood": mood,
+                    "prompt": {
+                        "id": "p2",
+                        "sectionTitle": "The moment",
+                        "title": f"What was going through your mind when {snippet[:60].rstrip('.')}…?",
+                        "hint": "Try to recall one specific detail — a place, a face, a sound.",
+                    },
+                }
+            else:
+                prompt = {
+                    "detectedMood": mood,
+                    "prompt": {
+                        "id": "p3",
+                        "sectionTitle": "What shifted",
+                        "title": "What feels different for you now, even in a small way?",
+                        "hint": "It might be how you see someone, yourself, or what you want next.",
+                    },
+                }
+            return json.dumps(prompt, indent=2)
+
+        return json.dumps({
+            "prompt": {
+                "id": "p1",
+                "sectionTitle": "Checking in",
+                "title": "What's been on your heart lately?",
+                "hint": "Could be something small — a text you reread, a walk, a feeling you can't shake.",
+            }
+        }, indent=2)
+
     def _generate_reflection_prompts(self, combined_prompt: str) -> str:
         """
-        Agent 1 Helper: Generates 4 personalized reflection questions based on niche and interests.
+        Legacy helper: life-focused reflection questions (fallback batch mode).
         """
-        # Default fallback prompts
         prompts = [
-            {"id": "p1", "title": "What was the biggest technical hurdle you faced this week?", "hint": "Describe the bug, system architecture problem, or design issue."},
-            {"id": "p2", "title": "Did you have an opinion shift about any coding practices or tools?", "hint": "A framework you used to love but now dislike, or vice-versa."},
-            {"id": "p3", "title": "What did you ship or deploy, and how did the initial feedback feel?", "hint": "A feature launch, pull request merge, or demo video show."},
-            {"id": "p4", "title": "Where did you feel out of your depth or experience imposter syndrome?", "hint": "A conversation with a senior engineer or a design review session."}
+            {"id": "p1", "sectionTitle": "Checking in", "title": "What's been sitting with you lately?", "hint": "A feeling, a conversation, a moment you keep replaying."},
+            {"id": "p2", "sectionTitle": "The moment", "title": "Can you walk me through the exact moment it hit you?", "hint": "Where were you? What did you see or hear?"},
+            {"id": "p3", "sectionTitle": "What shifted", "title": "What changed for you after that — even if it was subtle?", "hint": "A belief, a feeling, a decision."},
         ]
-        
-        lower_prompt = combined_prompt.lower()
-        if "storytelling" in lower_prompt or "writing" in lower_prompt:
-            prompts[0] = {"id": "p1", "title": "What storytelling hook caught your eye this week?", "hint": "A hook from a newsletter, a LinkedIn post, or a book chapter."}
-            prompts[3] = {"id": "p4", "title": "Where did you struggle to find the right voice or structure?", "hint": "A draft you rewrote three times or a pitch that fell flat."}
-            
-        if "startup" in lower_prompt or "founder" in lower_prompt:
-            prompts[1] = {"id": "p2", "title": "What did you learn from a user interacting with your product?", "hint": "A bug report, a screen recording, or a feature request interview."}
-            prompts[2] = {"id": "p3", "title": "What was your biggest win in user growth or product shipping?", "hint": "A customer conversion, a product launch milestone, or a successful demo."}
-            
         return json.dumps(prompts, indent=2)
 
     def _polish_assembled_post(self, combined_prompt: str) -> str:
