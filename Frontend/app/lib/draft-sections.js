@@ -1,4 +1,4 @@
-export const WORKSPACE_SECTION_IDS = ['hook', 'experience', 'conflict', 'lesson', 'cta'];
+export const WORKSPACE_SECTION_IDS = ['hook', 'experience', 'conflict', 'lesson', 'cta', 'caption', 'hashtags'];
 
 const SECTION_ALIASES = {
   hook: 'hook',
@@ -6,6 +6,8 @@ const SECTION_ALIASES = {
   conflict: 'conflict',
   lesson: 'lesson',
   cta: 'cta',
+  caption: 'caption',
+  hashtags: 'hashtags',
   context: 'experience',
   problem: 'conflict',
   realization: 'lesson',
@@ -19,7 +21,7 @@ const SECTION_ALIASES = {
 };
 
 export function emptySections() {
-  return { hook: '', experience: '', conflict: '', lesson: '', cta: '' };
+  return { hook: '', experience: '', conflict: '', lesson: '', cta: '', caption: '', hashtags: '' };
 }
 
 export function normalizeSections(raw) {

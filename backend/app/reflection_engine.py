@@ -291,4 +291,5 @@ def _build_response(
         "currentPrompt": current_prompt,
         "isComplete": is_complete,
         "answeredCount": len(answers),
+        "prompts": _session_prompts(session),
     }

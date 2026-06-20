@@ -21,4 +21,12 @@ export const reflectionService = {
     const res = await api.post(`/reflections/complete/${sessionId}`);
     return res.data;
   },
+  async extractStories(sessionId) {
+    const res = await api.post(`/reflections/${sessionId}/extract-stories`);
+    return res.data;
+  },
+  async saveStories(sessionId, stories) {
+    const res = await api.post(`/reflections/${sessionId}/save-stories`, { stories });
+    return res.data;
+  },
 };

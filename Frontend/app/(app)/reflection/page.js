@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, ArrowRight, Check, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Sparkles, X, Trash2, Save, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { reflectionService } from '@/services/reflection.service';
@@ -38,6 +38,12 @@ export default function ReflectionPage() {
   const [submitting, setSubmitting] = useState(false);
   const [ready, setReady] = useState(false);
 
+  // Review screen states
+  const [reviewMode, setReviewMode] = useState(false);
+  const [extractedStories, setExtractedStories] = useState([]);
+  const [selectedStories, setSelectedStories] = useState([]); // Array of indexes
+  const [savingStories, setSavingStories] = useState(false);
+
   useEffect(() => {
     if (!data) return;
     setSessionId(data.id);
@@ -67,15 +73,20 @@ export default function ReflectionPage() {
       if (res.detectedMood) setDetectedMood(res.detectedMood);
 
       if (res.isComplete || isLastQuestion) {
-        const completeRes = await reflectionService.complete(sessionId);
-        toast.success(
-          completeRes.storiesDiscovered
-            ? `${completeRes.storiesDiscovered} ${completeRes.storiesDiscovered === 1 ? 'story' : 'stories'} captured`
-            : 'Reflection saved — no new stories this time'
-        );
-        queryClient.invalidateQueries({ queryKey: ['stories'] });
-        queryClient.invalidateQueries({ queryKey: ['workspace'] });
-        router.push('/stories');
+        toast.info('Extracting stories from your reflection...', { id: 'extraction' });
+        try {
+          const extractRes = await reflectionService.extractStories(sessionId);
+          const stories = extractRes.stories || [];
+          setExtractedStories(stories);
+          setSelectedStories(stories.map((_, idx) => idx));
+          setReviewMode(true);
+          toast.dismiss('extraction');
+          toast.success('Stories extracted! Review them below.');
+        } catch (err) {
+          toast.dismiss('extraction');
+          toast.error('Failed to extract stories automatically');
+          router.push('/stories');
+        }
         return;
       }
 
@@ -96,10 +107,198 @@ export default function ReflectionPage() {
     }
   };
 
-  if (isLoading || !ready || !current) {
+  const toggleStorySelection = (index) => {
+    setSelectedStories((prev) =>
+      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
+    );
+  };
+
+  const updateStoryField = (index, field, val) => {
+    setExtractedStories((prev) =>
+      prev.map((story, idx) => (idx === index ? { ...story, [field]: val } : story))
+    );
+  };
+
+  const deleteStory = (index) => {
+    setExtractedStories((prev) => prev.filter((_, idx) => idx !== index));
+    setSelectedStories((prev) => prev.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)));
+  };
+
+  const handleSaveSelected = async () => {
+    if (selectedStories.length === 0) {
+      toast.error('Please select at least one story card to save');
+      return;
+    }
+    setSavingStories(true);
+    try {
+      const storiesToSave = extractedStories.filter((_, idx) => selectedStories.includes(idx));
+      await reflectionService.saveStories(sessionId, storiesToSave);
+      toast.success(`${storiesToSave.length} ${storiesToSave.length === 1 ? 'story' : 'stories'} saved to Story Bank`);
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace'] });
+      router.push('/stories');
+    } catch {
+      toast.error('Failed to save selected stories');
+    } finally {
+      setSavingStories(false);
+    }
+  };
+
+  if (isLoading || !ready || (!current && !reviewMode)) {
     return <div className="flex h-[70vh] items-center justify-center text-[13px] text-ink-muted">Preparing your reflection…</div>;
   }
 
+  // --- REVIEW SCREEN VIEW ---
+  if (reviewMode) {
+    return (
+      <div className="relative min-h-[calc(100vh-3.5rem)] bg-canvas pt-8 pb-32">
+        <div className="mx-auto max-w-4xl px-5">
+          <div className="text-center">
+            <Badge variant="secondary" className="rounded-full bg-brand-soft text-brand text-[11px] font-normal mb-3">
+              <Sparkles className="mr-1 h-3 w-3 inline" /> Memory Engine Active
+            </Badge>
+            <h1 className="font-display text-[32px] font-semibold tracking-tight text-ink md:text-[40px]">
+              Review Discovered Stories
+            </h1>
+            <p className="mt-2 text-[14.5px] text-ink-muted max-w-2xl mx-auto">
+              We parsed your journal reflection and generated these story entries. Customize their details or discard what you don't want.
+            </p>
+          </div>
+
+          <div className="mt-10 space-y-6">
+            {extractedStories.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-line bg-card px-5 py-12 text-center">
+                <p className="text-[14px] text-ink-muted">No story cards generated. You can head back to Story Bank.</p>
+                <Button onClick={() => router.push('/stories')} className="mt-4 rounded-xl bg-ink text-white">
+                  Go to Story Bank
+                </Button>
+              </div>
+            ) : (
+              extractedStories.map((story, idx) => {
+                const isSelected = selectedStories.includes(idx);
+                return (
+                  <div
+                    key={idx}
+                    className={`card-elev border-2 transition-all p-6 ${
+                      isSelected ? 'border-brand/40 bg-card shadow-soft' : 'border-line/60 bg-card/60 opacity-80'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleStorySelection(idx)}
+                          className="h-4.5 w-4.5 rounded border-line text-brand focus:ring-brand/30"
+                          id={`story-check-${idx}`}
+                        />
+                        <label htmlFor={`story-check-${idx}`} className="text-[13px] font-semibold text-ink-muted cursor-pointer">
+                          Select Story Card
+                        </label>
+                      </div>
+                      <button
+                        onClick={() => deleteStory(idx)}
+                        className="rounded-lg p-1.5 text-ink-subtle hover:bg-secondary hover:text-danger transition-colors"
+                        title="Delete Card"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-subtle">Story Title</label>
+                        <input
+                          type="text"
+                          value={story.title}
+                          onChange={(e) => updateStoryField(idx, 'title', e.target.value)}
+                          className="mt-1 w-full rounded-xl border border-line bg-canvas px-4 py-2.5 text-[14px] font-medium text-ink focus:outline-none focus:ring-2 focus:ring-brand/20"
+                        />
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div>
+                          <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-subtle">Summary / Event</label>
+                          <textarea
+                            value={story.summary}
+                            onChange={(e) => updateStoryField(idx, 'summary', e.target.value)}
+                            rows={3}
+                            className="mt-1 w-full resize-none rounded-xl border border-line bg-canvas px-4 py-2.5 text-[13.5px] leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-brand/20"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-subtle">Lesson Takeaway</label>
+                          <textarea
+                            value={story.lesson}
+                            onChange={(e) => updateStoryField(idx, 'lesson', e.target.value)}
+                            rows={3}
+                            className="mt-1 w-full resize-none rounded-xl border border-line bg-canvas px-4 py-2.5 text-[13.5px] leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-brand/20"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 pt-2 border-t border-line/40 items-center justify-between">
+                        <div className="flex gap-2">
+                          <Badge variant="outline" className="rounded-full border-line bg-canvas text-[10.5px] font-normal text-ink-muted">
+                            {story.category}
+                          </Badge>
+                          <Badge variant="outline" className="rounded-full border-line bg-canvas text-[10.5px] font-normal text-ink-muted capitalize">
+                            {story.emotion}
+                          </Badge>
+                        </div>
+                        <div className="flex gap-1.5">
+                          {(story.tags || []).map((t) => (
+                            <span key={t} className="text-[11.5px] text-ink-subtle">#{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-canvas/90 px-5 py-4 backdrop-blur-md md:px-8">
+          <div className="mx-auto max-w-4xl flex items-center justify-between">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (selectedStories.length === extractedStories.length) {
+                  setSelectedStories([]);
+                } else {
+                  setSelectedStories(extractedStories.map((_, idx) => idx));
+                }
+              }}
+              className="h-10 text-[13px] text-ink-muted rounded-xl"
+            >
+              {selectedStories.length === extractedStories.length ? 'Deselect All' : 'Select All'}
+            </Button>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={() => router.push('/stories')}
+                className="h-10 border-line text-[13px] rounded-xl"
+              >
+                Discard Journal
+              </Button>
+              <Button
+                onClick={handleSaveSelected}
+                disabled={savingStories || selectedStories.length === 0}
+                className="h-10 rounded-xl bg-ink px-5 text-[13px] text-white hover:bg-ink/90 inline-flex items-center gap-1.5"
+              >
+                <Save className="h-4 w-4" />
+                {savingStories ? 'Saving…' : `Save ${selectedStories.length} Selected`}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- GUIDED QUESTIONS VIEW ---
   return (
     <div className="relative min-h-[calc(100vh-3.5rem)]">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-canvas/80 px-5 py-3 backdrop-blur-md md:px-8">

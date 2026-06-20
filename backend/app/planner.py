@@ -17,13 +17,29 @@ def _draft_item(draft: ContentDraft, story_title: str) -> dict:
     scheduled = None
     if draft.scheduled_at:
         scheduled = draft.scheduled_at.astimezone(IST) if draft.scheduled_at.tzinfo else draft.scheduled_at
+    
+    sections = draft.sections or {}
+    snippet = ""
+    for key in ["hook", "experience", "lesson", "conflict", "cta", "caption"]:
+        val = sections.get(key, "")
+        if val and str(val).strip():
+            snippet = str(val).strip()
+            break
+    if len(snippet) > 120:
+        snippet = snippet[:117] + "..."
+
+    draft_type_label = DRAFT_FORMAT_LABELS.get(draft.format, draft.format.replace("_", " ").title())
+
     return {
         "id": draft.id,
         "storyId": draft.story_id,
-        "title": story_title,
-        "type": DRAFT_FORMAT_LABELS.get(draft.format, draft.format),
+        "title": f"{draft_type_label} - {story_title}",
+        "storyTitle": story_title,
+        "draftTitle": f"{draft_type_label} Draft",
+        "type": draft_type_label,
         "format": draft.format,
         "status": draft.status,
+        "snippet": snippet,
         "scheduledAt": scheduled.isoformat() if scheduled else None,
         "reminderEnabled": bool(draft.reminder_enabled),
         "reminderActive": bool(draft.reminder_enabled and draft.scheduled_at),
@@ -49,7 +65,7 @@ def get_planner_week(db: Session, user_id: str, offset: int = 0) -> dict:
     unscheduled = []
 
     for draft in drafts:
-        item = _draft_item(draft, story_titles.get(d.story_id, "Untitled story"))
+        item = _draft_item(draft, story_titles.get(draft.story_id, "Untitled story"))
         if draft.scheduled_at:
             local = draft.scheduled_at
             if local.tzinfo is None:

@@ -157,6 +157,9 @@ class StartReflectionPayload(BaseModel):
     mood: Optional[str] = None
     goal: Optional[str] = None
 
+class SaveStoriesPayload(BaseModel):
+    stories: List[dict]
+
 class ScheduleDraftPayload(BaseModel):
     scheduledAt: Optional[str] = None
     scheduledDay: Optional[str] = None
@@ -504,15 +507,17 @@ def get_workspace_home(current_user: User = Depends(get_current_user), db: Sessi
             "suggestedFormats": [o.content_type.replace("_", " ").capitalize()]
         })
 
-    # 3. Weekly plan mapping
-    weekly_plan = [
-        {"day": "Mon", "title": "Founder coffee story", "status": "draft"},
-        {"day": "Wed", "title": "Lessons from 0→1", "status": "scheduled"},
-        {"day": "Fri", "title": "Why I quit my job", "status": "idea"}
-    ]
-    if len(recent_stories) > 0:
-        weekly_plan[0]["title"] = recent_stories[0]["title"]
-        weekly_plan[0]["status"] = recent_stories[0]["status"]
+    # 3. Weekly plan mapping dynamically from the planner
+    from app.planner import get_planner_week
+    planner_data = get_planner_week(db, user_id, offset=0)
+    weekly_plan = []
+    for day in planner_data.get("week", []):
+        for item in day.get("items", []):
+            weekly_plan.append({
+                "day": day["day"],
+                "title": item["title"],
+                "status": item["status"]
+            })
 
     return {
         "continueReflection": ref_data,
@@ -702,6 +707,7 @@ def complete_reflection(
                         id=opp_id,
                         user_id=current_user.id,
                         memory_id=memory.id,
+                        reflection_session_id=session_id,
                         content_type="story",
                         topic=memory.event[:120] if memory.event else "Untitled moment",
                         status="idea",
@@ -719,6 +725,139 @@ def complete_reflection(
         "success": True,
         "storiesDiscovered": stories_discovered,
     }
+
+@app.post("/api/reflections/{session_id}/extract-stories")
+def extract_stories(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = db.query(ReflectionSession).filter(
+        ReflectionSession.id == session_id,
+        ReflectionSession.user_id == current_user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Reflection session not found.")
+
+    answers = db.query(ReflectionAnswer).filter(ReflectionAnswer.session_id == session_id).order_by(ReflectionAnswer.created_at.asc()).all()
+    if not answers:
+        return {"stories": []}
+
+    journal_text = "\n".join([
+        f"Question: {ans.prompt_title}\nAnswer: {ans.answer_text}"
+        for ans in answers if ans.answer_text and ans.answer_text.strip()
+    ])
+
+    llm = get_llm()
+    system_prompt = (
+        "You are Agent 1: Creator Memory Engine.\n"
+        "Your task is to analyze the complete reflection journal and extract multiple independent, distinct Story Cards.\n"
+        "Each Story Card should represent a distinct memory, insight, feeling, or lesson discussed in the journal.\n"
+        "Do NOT invent details. Rely strictly on the user's journal content.\n"
+        "Return a JSON object containing a list of extracted stories matching this schema:\n"
+        "{\n"
+        "  \"stories\": [\n"
+        "    {\n"
+        "      \"title\": \"Story Title\",\n"
+        "      \"summary\": \"Brief summary of the memory/event\",\n"
+        "      \"lesson\": \"The key takeaway or realization\",\n"
+        "      \"emotion\": \"Primary emotion (e.g. Vulnerability, Growth, Grief, Joy)\",\n"
+        "      \"category\": \"Category (e.g. Career, Family, Mindset, Creator Journey)\",\n"
+        "      \"tags\": [\"tag1\", \"tag2\"]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Output ONLY valid JSON. No markdown."
+    )
+
+    try:
+        reply = llm.generate(system_prompt, f"Analyze this reflection journal:\n{journal_text}")
+        cleaned_json = reply
+        if "```json" in reply:
+            cleaned_json = reply.split("```json")[-1].split("```")[0].strip()
+        elif "```" in reply:
+            cleaned_json = reply.split("```")[-1].split("```")[0].strip()
+        data = json.loads(cleaned_json)
+        return {"stories": data.get("stories", [])}
+    except Exception as e:
+        logger.error(f"Failed to extract stories: {e}")
+        from app.llm import mock_llm_client
+        mock_reply = mock_llm_client._extract_multiple_stories(journal_text)
+        data = json.loads(mock_reply)
+        return {"stories": data.get("stories", [])}
+
+@app.post("/api/reflections/{session_id}/save-stories")
+def save_stories(
+    session_id: str,
+    payload: SaveStoriesPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = db.query(ReflectionSession).filter(
+        ReflectionSession.id == session_id,
+        ReflectionSession.user_id == current_user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Reflection session not found.")
+
+    session.status = "completed"
+    
+    # Retrieve all answers to preserve journal
+    answers = db.query(ReflectionAnswer).filter(ReflectionAnswer.session_id == session_id).order_by(ReflectionAnswer.created_at.asc()).all()
+    combined_journal_text = "\n".join([
+        f"Q: {ans.prompt_title}\nA: {ans.answer_text}"
+        for ans in answers
+    ])
+
+    from app.llm import embedding_engine
+    
+    saved_count = 0
+    for s_data in payload.stories:
+        title = s_data.get("title", "Untitled Story").strip()
+        summary = s_data.get("summary", "").strip()
+        lesson = s_data.get("lesson", "").strip()
+        emotion = s_data.get("emotion", "Growth").strip()
+        category = s_data.get("category", "General").strip()
+        tags = s_data.get("tags", [])
+
+        if not title:
+            continue
+
+        mem_id = f"mem_{uuid.uuid4().hex[:8]}"
+        embedding_bytes = embedding_engine.get_embedding(f"{title} {summary} {lesson}")
+        
+        memory = Memory(
+            id=mem_id,
+            user_id=current_user.id,
+            memory_type="personal_experience",
+            event=summary or title,
+            turning_point=lesson,
+            raw_input=combined_journal_text,
+            embedding=embedding_bytes
+        )
+        memory.topic = tags or [category.lower()]
+        memory.emotion = [emotion]
+        db.add(memory)
+        
+        opp_id = f"st_{uuid.uuid4().hex[:8]}"
+        opportunity = ContentOpportunity(
+            id=opp_id,
+            user_id=current_user.id,
+            memory_id=mem_id,
+            reflection_session_id=session_id,
+            content_type="story",
+            topic=title,
+            status="idea"
+        )
+        opportunity.hook_options = []
+        opportunity.structure = ["context", "problem", "lesson"]
+        opportunity.creator_inputs_used = tags or [category.lower()]
+        db.add(opportunity)
+        
+        saved_count += 1
+
+    db.commit()
+    return {"success": True, "storiesSaved": saved_count}
 
 # --- MEMORIES ---
 @app.get("/api/memories")
@@ -770,6 +909,28 @@ def list_stories(current_user: User = Depends(get_current_user), db: Session = D
 def get_story(story_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     o = _get_user_opportunity(db, story_id, current_user.id)
     meta = _enrich_story(o)
+    
+    journal = None
+    if o.reflection_session_id:
+        ref_session = db.query(ReflectionSession).filter(
+            ReflectionSession.id == o.reflection_session_id,
+            ReflectionSession.user_id == current_user.id
+        ).first()
+        if ref_session:
+            answers = db.query(ReflectionAnswer).filter(
+                ReflectionAnswer.session_id == ref_session.id
+            ).order_by(ReflectionAnswer.created_at.asc()).all()
+            journal = {
+                "timestamp": ref_session.created_at.isoformat(),
+                "answers": [
+                    {
+                        "prompt": ans.prompt_title,
+                        "answer": ans.answer_text,
+                        "timestamp": ans.created_at.isoformat()
+                    } for ans in answers
+                ]
+            }
+
     return {
         "id": o.id,
         "title": o.topic,
@@ -785,6 +946,7 @@ def get_story(story_id: str, current_user: User = Depends(get_current_user), db:
         "suggestedFormats": [o.content_type.replace("_", " ").capitalize()],
         "hooks": o.hook_options,
         "structure": o.structure,
+        "journal": journal,
     }
 
 @app.post("/api/stories")
@@ -888,7 +1050,7 @@ def create_content_draft(
         user_id=current_user.id,
         format=fmt,
         status="draft",
-        sections={"hook": "", "experience": "", "conflict": "", "lesson": "", "cta": ""},
+        sections={"hook": "", "experience": "", "conflict": "", "lesson": "", "cta": "", "caption": "", "hashtags": ""},
     )
     db.add(draft)
     db.commit()
@@ -929,6 +1091,28 @@ def delete_content_draft(draft_id: str, current_user: User = Depends(get_current
     db.delete(draft)
     db.commit()
     return {"ok": True, "id": draft_id}
+
+
+@app.post("/api/drafts/{draft_id}/duplicate")
+def duplicate_content_draft(
+    draft_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    draft = _get_user_draft(db, draft_id, current_user.id)
+    new_id = f"dr_{uuid.uuid4().hex[:8]}"
+    new_draft = ContentDraft(
+        id=new_id,
+        story_id=draft.story_id,
+        user_id=current_user.id,
+        format=draft.format,
+        status="draft",
+        sections_json=draft.sections_json,
+    )
+    db.add(new_draft)
+    db.commit()
+    db.refresh(new_draft)
+    return _draft_to_response(new_draft)
 
 
 # --- LEGACY WORKSPACE DRAFTS (compat) ---

@@ -295,6 +295,10 @@ class MockLLMClient:
         if "personal life stories" in system_prompt.lower() or "warm, thoughtful companion" in system_prompt.lower():
             return self._generate_adaptive_reflection(combined_prompt)
 
+        # Check if this is a multiple story extraction request
+        if "analyze the complete reflection journal and extract multiple independent, distinct story cards" in system_prompt.lower() or "story cards" in system_prompt.lower():
+            return self._extract_multiple_stories(combined_prompt)
+
         # Legacy batch reflection prompts
         if "generate 4 personalized" in system_prompt.lower() or "reflection prompts" in system_prompt.lower():
             return self._generate_reflection_prompts(combined_prompt)
@@ -682,6 +686,60 @@ class MockLLMClient:
                 "Let's package this into a structured content opportunity now. "
                 "[Opportunity Card Generated below]"
             )
+
+    def _extract_multiple_stories(self, combined_prompt: str) -> str:
+        """
+        Agent 1 Helper: Mock story card extractor for a complete journal.
+        """
+        lower = combined_prompt.lower()
+        stories = []
+        if "internship" in lower or "rejection" in lower:
+            stories = [
+                {
+                    "title": "Internship Rejection",
+                    "summary": "Handling the sting of rejection from a dream internship and processing the emotional weight.",
+                    "lesson": "A rejection is just a redirection to a path where you are truly valued.",
+                    "emotion": "Vulnerability",
+                    "category": "Career",
+                    "tags": ["career", "rejection", "growth"]
+                },
+                {
+                    "title": "Parents' Support",
+                    "summary": "Realizing the depth of parental love and support when things didn't go as planned.",
+                    "lesson": "Success is temporary, but the family that supports your struggle is permanent.",
+                    "emotion": "Joy",
+                    "category": "Relationships",
+                    "tags": ["family", "support", "gratitude"]
+                },
+                {
+                    "title": "Learning from Failure",
+                    "summary": "Rebuilding confidence and strategy after failing to secure the expected role.",
+                    "lesson": "Failure is the best training ground for resilience and self-reflection.",
+                    "emotion": "Growth",
+                    "category": "Mindset",
+                    "tags": ["mindset", "failure", "learning"]
+                }
+            ]
+        else:
+            stories = [
+                {
+                    "title": "Overcoming Obstacles",
+                    "summary": "Navigating recent life lessons and challenges that felt heavy at first.",
+                    "lesson": "Quiet consistency compounds into clarity over time.",
+                    "emotion": "Reflective",
+                    "category": "Journey",
+                    "tags": ["growth", "resilience"]
+                },
+                {
+                    "title": "Finding Support",
+                    "summary": "Revisiting conversations or support systems that helped ease the burden.",
+                    "lesson": "You don't have to carry every transition alone.",
+                    "emotion": "Grateful",
+                    "category": "Relationships",
+                    "tags": ["support", "connection"]
+                }
+            ]
+        return json.dumps({"stories": stories}, indent=2)
 
 # Instantiate LLM Clients
 local_llm_client = LocalLLMClient()

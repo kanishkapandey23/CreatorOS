@@ -32,4 +32,8 @@ export const draftService = {
     const res = await api.delete(`/drafts/${draftId}`);
     return res.data;
   },
+  async duplicate(draftId) {
+    const res = await api.post(`/drafts/${draftId}/duplicate`);
+    return res.data;
+  },
 };

@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpRight, Plus } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, Plus, BookOpen } from 'lucide-react';
 import { storyService } from '@/services/story.service';
 import { draftService, DRAFT_FORMATS } from '@/services/draft.service';
 import { Button } from '@/components/ui/button';
@@ -42,6 +42,17 @@ export default function StoryDetailPage() {
     onError: () => toast.error('Failed to create draft'),
   });
 
+  const deleteDraftMutation = useMutation({
+    mutationFn: (draftId) => draftService.remove(draftId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', storyId, 'drafts'] });
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
+      queryClient.invalidateQueries({ queryKey: ['planner'] });
+      toast.success('Draft deleted successfully');
+    },
+    onError: () => toast.error('Failed to delete draft'),
+  });
+
   if (isLoading) return <div className="flex h-[60vh] items-center justify-center text-[13px] text-ink-muted">Loading story…</div>;
   if (!story) return <div className="flex h-[60vh] items-center justify-center text-[13px] text-ink-muted">Story not found.</div>;
 
@@ -75,7 +86,26 @@ export default function StoryDetailPage() {
         </div>
       </div>
 
-      <section className="mt-10">
+      {story.journal && (
+        <section className="mt-10 border-t border-line/60 pt-8">
+          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-ink-subtle flex items-center gap-1.5">
+            <BookOpen className="h-3.5 w-3.5 text-brand" /> Original Reflection Journal
+          </p>
+          <p className="mt-1 text-[13px] text-ink-muted">
+            The raw thoughts captured during guided reflection on {new Date(story.journal.timestamp).toLocaleDateString(undefined, { dateStyle: 'medium' })}.
+          </p>
+          <div className="mt-4 space-y-4">
+            {story.journal.answers.map((ans, idx) => (
+              <div key={idx} className="rounded-2xl border border-line bg-card/40 p-5">
+                <p className="text-[12px] font-semibold text-brand">Q: {ans.prompt}</p>
+                <p className="mt-2 text-[14px] leading-relaxed text-ink whitespace-pre-wrap">{ans.answer}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="mt-10 border-t border-line/60 pt-8">
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-ink-subtle">Content drafts</p>
@@ -113,13 +143,20 @@ export default function StoryDetailPage() {
           </div>
         )}
 
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 space-y-2.5">
           {drafts.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-line bg-canvas/40 px-5 py-8 text-center text-[13px] text-ink-muted">
               No drafts yet. Create a LinkedIn post, reel, carousel, or thread from this story.
             </div>
           ) : (
-            drafts.map((d) => <DraftCard key={d.id} draft={d} storyId={storyId} />)
+            drafts.map((d) => (
+              <DraftCard
+                key={d.id}
+                draft={d}
+                storyId={storyId}
+                onDelete={(draftId) => deleteDraftMutation.mutate(draftId)}
+              />
+            ))
           )}
         </div>
       </section>

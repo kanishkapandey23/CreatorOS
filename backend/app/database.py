@@ -155,6 +155,8 @@ class ContentOpportunity(Base):
 
     user = relationship("User", back_populates="opportunities")
     memory = relationship("Memory")
+    reflection_session_id = Column(String, ForeignKey("reflection_sessions.id"), nullable=True)
+    reflection_session = relationship("ReflectionSession")
 
     @property
     def hook_options(self):
@@ -383,6 +385,11 @@ def init_db():
         _migrate_creator_profile_id_to_user_id(db)
         try:
             db.execute(text("ALTER TABLE chat_sessions ADD COLUMN opportunity_id VARCHAR"))
+            db.commit()
+        except Exception:
+            db.rollback()
+        try:
+            db.execute(text("ALTER TABLE content_opportunities ADD COLUMN reflection_session_id VARCHAR"))
             db.commit()
         except Exception:
             db.rollback()

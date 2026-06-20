@@ -51,20 +51,46 @@ export function StoryCard({ story, showActions = true }) {
   );
 }
 
-export function DraftCard({ draft, storyId }) {
+export function DraftCard({ draft, storyId, onDelete }) {
   return (
-    <Link
-      href={`/stories/${storyId}/studio/${draft.id}`}
-      className="card-elev group flex items-center justify-between p-4 transition-shadow hover:shadow-pop"
-    >
+    <div className="card-elev group flex flex-col sm:flex-row sm:items-center sm:justify-between p-5 transition-shadow hover:shadow-pop gap-4">
       <div>
-        <p className="font-display text-[15px] font-semibold text-ink">{draft.formatLabel}</p>
-        <p className="mt-0.5 text-[12px] capitalize text-ink-muted">{draft.status}</p>
+        <div className="flex items-center gap-2">
+          <p className="font-display text-[15.5px] font-semibold text-ink">{draft.formatLabel}</p>
+          <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[10px] uppercase font-normal tracking-wider bg-secondary text-ink-muted">
+            {draft.status}
+          </Badge>
+        </div>
+        <p className="mt-1 text-[12px] text-ink-subtle">
+          Last updated: {draft.updatedAt ? new Date(draft.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never'}
+        </p>
       </div>
-      <div className="flex items-center gap-2 text-[11.5px] text-ink-subtle">
-        {draft.updatedAt && new Date(draft.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-        <ChevronRight className="h-4 w-4 text-ink-subtle group-hover:text-ink" />
+      <div className="flex flex-wrap items-center gap-2">
+        <Button asChild variant="outline" size="sm" className="h-8.5 rounded-lg border-line text-[12px] px-3.5">
+          <Link href={`/stories/${storyId}/studio/${draft.id}`}>
+            Open Preview
+          </Link>
+        </Button>
+        <Button asChild variant="outline" size="sm" className="h-8.5 rounded-lg border-line text-[12px] px-3.5">
+          <Link href={`/stories/${storyId}/studio/${draft.id}?edit=true`}>
+            Edit
+          </Link>
+        </Button>
+        {onDelete && (
+          <Button
+            onClick={() => {
+              if (confirm('Are you sure you want to delete this draft?')) {
+                onDelete(draft.id);
+              }
+            }}
+            variant="ghost"
+            size="sm"
+            className="h-8.5 rounded-lg text-[12px] text-danger hover:bg-danger/10 hover:text-danger px-3"
+          >
+            Delete
+          </Button>
+        )}
       </div>
-    </Link>
+    </div>
   );
 }
