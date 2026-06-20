@@ -80,7 +80,7 @@ class SystemDiagnostics:
 diagnostics = SystemDiagnostics.profile()
 
 # Load env variables with profiled defaults
-LLM_MODE = os.environ.get("LLM_MODE", diagnostics["default_mode"]).lower()
+LLM_MODE = os.environ.get("LLM_MODE", "gemini").lower()
 LLM_MODEL_SIZE = os.environ.get("LLM_MODEL_SIZE", diagnostics["default_size"]).lower()
 
 # Support model family selection (qwen or llama)
@@ -102,13 +102,13 @@ def _resolve_llm_mode() -> str:
     mode = LLM_MODE
     if mode != "auto":
         return mode
-    if GEMINI_API_KEY:
-        return "gemini"
-    if GROQ_API_KEY:
-        return "groq"
-    if diagnostics["cuda_available"]:
-        return "local"
-    return "mock"
+        if GEMINI_API_KEY:
+            return "gemini"
+        if GROQ_API_KEY:
+            return "groq"
+        if diagnostics["cuda_available"]:
+            return "local"
+        return "gemini" # Force gemini if mock is disabled
 
 
 logger.info(
@@ -119,11 +119,6 @@ logger.info(
 class SentenceEmbeddingEngine:
     def __init__(self):
         self.model = None
-        self.offline_fallback = False
-        if LLM_MODE == "mock":
-            logger.info("LLM_MODE is 'mock'. Skipping SentenceTransformer initialization and enabling offline fallback.")
-            self.offline_fallback = True
-            return
         try:
             from sentence_transformers import SentenceTransformer
             # Try to load the lightweight model
@@ -131,29 +126,16 @@ class SentenceEmbeddingEngine:
             self.model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
             logger.info("SentenceTransformer loaded successfully.")
         except Exception as e:
-            logger.warning(f"Could not load SentenceTransformer: {e}. Falling back to simple keyword matching embeddings.")
-            self.offline_fallback = True
+            logger.error(f"Could not load SentenceTransformer: {e}")
+            raise RuntimeError(f"SentenceTransformer failed: {e}")
 
     def get_embedding(self, text: str) -> bytes:
-        if self.offline_fallback or not self.model:
-            # Simple hash-based fallback or mock array of length 384
-            # We seed based on word frequencies
-            words = re.findall(r'\w+', text.lower())
-            arr = np.zeros(384, dtype=np.float32)
-            for w in words:
-                idx = sum(ord(c) for c in w) % 384
-                arr[idx] += 1.0
-            norm = np.linalg.norm(arr)
-            if norm > 0:
-                arr = arr / norm
-            return arr.tobytes()
         try:
             embedding = self.model.encode(text)
             return np.array(embedding, dtype=np.float32).tobytes()
         except Exception as e:
             logger.error(f"Embedding error: {e}")
-            arr = np.zeros(384, dtype=np.float32).tobytes()
-            return arr
+            raise
 
     def compute_similarity(self, emb_a: bytes, emb_b: bytes) -> float:
         if not emb_a or not emb_b:
@@ -236,8 +218,7 @@ class LocalLLMClient:
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         self._lazy_load()
         if not self.loaded or not self.pipeline:
-            logger.warning("Local pipeline not available. Falling back to Mock generator.")
-            return mock_llm_client.generate(system_prompt, user_prompt)
+            raise RuntimeError("Local pipeline not available.")
             
         try:
             prompt, assistant_marker = _build_chat_prompt(system_prompt, user_prompt)
@@ -249,31 +230,28 @@ class LocalLLMClient:
             return assistant_reply.strip()
         except Exception as e:
             logger.error(f"Generation error in LocalLLMClient: {e}")
-            return mock_llm_client.generate(system_prompt, user_prompt)
+            raise RuntimeError(f"Generation error in LocalLLMClient: {e}")
 
 class GeminiLLMClient:
     """Google Gemini API — free tier, fast (~1-3s). Get key: https://aistudio.google.com/apikey"""
+    
+    def __init__(self):
+        import httpx
+        self.client = httpx.Client(timeout=90.0)
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         if not GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set. Falling back to Mock LLM.")
-            return mock_llm_client.generate(system_prompt, user_prompt)
-        try:
-            import httpx
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-            payload = {
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
-            }
-            with httpx.Client(timeout=90.0) as client:
-                res = client.post(url, params={"key": GEMINI_API_KEY}, json=payload)
-                res.raise_for_status()
-                data = res.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}. Falling back to Mock LLM.")
-            return mock_llm_client.generate(system_prompt, user_prompt)
+            raise ValueError("GEMINI_API_KEY not set. Cannot run without API key.")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
+        }
+        res = self.client.post(url, params={"key": GEMINI_API_KEY}, json=payload)
+        res.raise_for_status()
+        data = res.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
 class GroqLLMClient:
@@ -281,8 +259,7 @@ class GroqLLMClient:
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         if not GROQ_API_KEY:
-            logger.warning("GROQ_API_KEY not set. Falling back to Mock LLM.")
-            return mock_llm_client.generate(system_prompt, user_prompt)
+            raise ValueError("GROQ_API_KEY not set. Cannot run without API key.")
         try:
             import httpx
             with httpx.Client(timeout=90.0) as client:
@@ -306,20 +283,16 @@ class GroqLLMClient:
                 data = res.json()
                 return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.error(f"Groq API error: {e}. Falling back to Mock LLM.")
-            return mock_llm_client.generate(system_prompt, user_prompt)
+            logger.error(f"Groq API error: {e}")
+            raise RuntimeError(f"Groq API error: {e}")
 
 class MockLLMClient:
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        """
-        Simulates Agent 1 JSON memory extraction or Agent 2 questioning system
-        based on keyword rules, regex parsing, and template generation.
-        """
         cleaned_user = user_prompt.strip()
         combined_prompt = system_prompt + "\n" + cleaned_user
         
         # Check if this is a prompts generation request
-        if "generate 6 personalized" in system_prompt.lower() or "reflection prompts" in system_prompt.lower():
+        if "generate 4 personalized" in system_prompt.lower() or "reflection prompts" in system_prompt.lower():
             return self._generate_reflection_prompts(combined_prompt)
             
         # Check if this is a draft polishing request
@@ -345,28 +318,24 @@ class MockLLMClient:
 
     def _generate_reflection_prompts(self, combined_prompt: str) -> str:
         """
-        Agent 1 Helper: Generates 6 personalized reflection questions based on niche and interests.
+        Agent 1 Helper: Generates 4 personalized reflection questions based on niche and interests.
         """
         # Default fallback prompts
         prompts = [
             {"id": "p1", "title": "What was the biggest technical hurdle you faced this week?", "hint": "Describe the bug, system architecture problem, or design issue."},
             {"id": "p2", "title": "Did you have an opinion shift about any coding practices or tools?", "hint": "A framework you used to love but now dislike, or vice-versa."},
             {"id": "p3", "title": "What did you ship or deploy, and how did the initial feedback feel?", "hint": "A feature launch, pull request merge, or demo video show."},
-            {"id": "p4", "title": "Where did you feel out of your depth or experience imposter syndrome?", "hint": "A conversation with a senior engineer or a design review session."},
-            {"id": "p5", "title": "Who gave you a piece of unexpected technical or product advice?", "hint": "A coworker, a tweet, a github issue, or a blog post."},
-            {"id": "p6", "title": "If you could write one warning to your past self this week, what would it be?", "hint": "Save others from making the same mistake by sharing the lesson."}
+            {"id": "p4", "title": "Where did you feel out of your depth or experience imposter syndrome?", "hint": "A conversation with a senior engineer or a design review session."}
         ]
         
         lower_prompt = combined_prompt.lower()
         if "storytelling" in lower_prompt or "writing" in lower_prompt:
             prompts[0] = {"id": "p1", "title": "What storytelling hook caught your eye this week?", "hint": "A hook from a newsletter, a LinkedIn post, or a book chapter."}
             prompts[3] = {"id": "p4", "title": "Where did you struggle to find the right voice or structure?", "hint": "A draft you rewrote three times or a pitch that fell flat."}
-            prompts[5] = {"id": "p6", "title": "What authentic lesson from your creative journey is worth sharing now?", "hint": "An experience where being transparent built trust with your readers."}
             
         if "startup" in lower_prompt or "founder" in lower_prompt:
             prompts[1] = {"id": "p2", "title": "What did you learn from a user interacting with your product?", "hint": "A bug report, a screen recording, or a feature request interview."}
             prompts[2] = {"id": "p3", "title": "What was your biggest win in user growth or product shipping?", "hint": "A customer conversion, a product launch milestone, or a successful demo."}
-            prompts[4] = {"id": "p5", "title": "What founder burnout signal did you notice or manage this week?", "hint": "A day you wanted to close the laptop or a realization about pacing."}
             
         return json.dumps(prompts, indent=2)
 
@@ -668,10 +637,10 @@ class MockLLMClient:
             )
 
 # Instantiate LLM Clients
-mock_llm_client = MockLLMClient()
 local_llm_client = LocalLLMClient()
 gemini_llm_client = GeminiLLMClient()
 groq_llm_client = GroqLLMClient()
+mock_llm_client = MockLLMClient()
 
 _LLM_CLIENTS = {
     "gemini": gemini_llm_client,
@@ -685,6 +654,5 @@ def get_llm():
     mode = _resolve_llm_mode()
     client = _LLM_CLIENTS.get(mode)
     if not client:
-        logger.warning(f"Unknown LLM_MODE '{LLM_MODE}'. Falling back to mock.")
-        return mock_llm_client
+        raise ValueError(f"Unknown LLM_MODE '{LLM_MODE}'.")
     return client

@@ -285,12 +285,25 @@ def _migrate_user_oauth_columns(db):
             db.rollback()
 
 
+def _migrate_creator_profile_id_to_user_id(db):
+    try:
+        # Check column names
+        res = db.execute(text("PRAGMA table_info(creator_profile)")).fetchall()
+        columns = [row[1] for row in res]
+        if "id" in columns and "user_id" not in columns:
+            db.execute(text("ALTER TABLE creator_profile RENAME COLUMN id TO user_id"))
+            db.commit()
+    except Exception:
+        db.rollback()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         _migrate_add_user_id_columns(db)
         _migrate_user_oauth_columns(db)
+        _migrate_creator_profile_id_to_user_id(db)
         try:
             db.execute(text("ALTER TABLE chat_sessions ADD COLUMN opportunity_id VARCHAR"))
             db.commit()

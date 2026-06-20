@@ -255,7 +255,7 @@ def get_workspace_home(current_user: User = Depends(get_current_user), db: Sessi
             "id": active_ref.id,
             "title": active_ref.title,
             "progress": ans_count,
-            "total": 6
+            "total": 4
         }
     else:
         # Create a default active session if none exists
@@ -268,7 +268,7 @@ def get_workspace_home(current_user: User = Depends(get_current_user), db: Sessi
             "id": session_id,
             "title": "Tuesday Reflection",
             "progress": 0,
-            "total": 6
+            "total": 4
         }
         
     # 2. Recent opportunities (Story Bank drafts/ideas)
@@ -383,9 +383,7 @@ REFLECTION_PROMPTS = [
   {"id": "p1", "title": "What made you pause this week?", "hint": "A small moment is enough. A line someone said. A thought during a walk."},
   {"id": "p2", "title": "What did you change your mind about?", "hint": "Even a tiny shift in opinion is a story worth telling."},
   {"id": "p3", "title": "What did you build, ship or finish?", "hint": "No accomplishment is too small. Describe how it felt."},
-  {"id": "p4", "title": "Where did you struggle?", "hint": "Friction makes the best stories. Be honest with yourself."},
-  {"id": "p5", "title": "Who taught you something?", "hint": "A mentor, a stranger, a child, a book — anyone."},
-  {"id": "p6", "title": "If you could share one thing this week, what would it be?", "hint": "Trust your instinct. The first answer is usually the truest."}
+  {"id": "p4", "title": "Where did you struggle?", "hint": "Friction makes the best stories. Be honest with yourself."}
 ]
 
 @app.get("/api/reflections/active")
@@ -413,16 +411,14 @@ def get_active_reflection(current_user: User = Depends(get_current_user), db: Se
     llm = get_llm()
     system_prompt = (
         "You are Agent 1: Creator Memory Engine.\n"
-        "Your task is to generate 6 personalized, non-repetitive reflection prompts for the creator.\n"
+        "Your task is to generate 4 personalized, non-repetitive reflection prompts for the creator.\n"
         "These prompts must be tailored to their niche and interests, and reference their recent memory history (to avoid duplicate questions and help them dive deeper into recent events).\n"
         "You must output ONLY valid JSON matching this schema:\n"
         "[\n"
         "  { \"id\": \"p1\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
         "  { \"id\": \"p2\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
         "  { \"id\": \"p3\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p4\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p5\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" },\n"
-        "  { \"id\": \"p6\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" }\n"
+        "  { \"id\": \"p4\", \"title\": \"question text?\", \"hint\": \"helpful hints...\" }\n"
         "]"
     )
     user_prompt = (
@@ -441,7 +437,7 @@ def get_active_reflection(current_user: User = Depends(get_current_user), db: Se
             cleaned_json = llm_output.split("```")[-1].split("```")[0].strip()
         
         parsed = json.loads(cleaned_json)
-        if isinstance(parsed, list) and len(parsed) == 6:
+        if isinstance(parsed, list) and len(parsed) == 4:
             prompts = parsed
     except Exception as e:
         logger.error(f"Error generating dynamic reflection prompts: {e}. Falling back to default prompts.")
